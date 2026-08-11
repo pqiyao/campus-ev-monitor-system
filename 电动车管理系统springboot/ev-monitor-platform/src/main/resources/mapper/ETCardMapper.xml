@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.evmonitorplatform.mapper.ETCardMapper">
+
+    <resultMap id="ETCardJoinMap" type="com.example.evmonitorplatform.entity.ETCard">
+        <id column="etc_id" property="etcId"/>
+        <result column="vehicle_id" property="vehicleId"/>
+        <result column="etc_number" property="etcNumber"/>
+        <result column="balance" property="balance"/>
+        <result column="status" property="status"/>
+        <result column="issue_date" property="issueDate"/>
+        <result column="expire_date" property="expireDate"/>
+        <result column="create_time" property="createTime"/>
+        <result column="update_time" property="updateTime"/>
+        <result column="license_plate" property="licensePlate"/>
+        <result column="owner_name" property="ownerName"/>
+        <result column="phone" property="phone"/>
+        <result column="user_type" property="userType"/>
+    </resultMap>
+
+    <select id="selectCardPage" resultMap="ETCardJoinMap">
+        SELECT e.*,
+        v.license_plate,
+        u.real_name AS owner_name,
+        u.phone,
+        u.user_type
+        FROM etc_card e
+        LEFT JOIN vehicle_info v ON e.vehicle_id = v.vehicle_id AND v.deleted = 0
+        LEFT JOIN `user` u ON v.user_id = u.user_id
+        WHERE 1=1
+        <if test="status != null and status != ''">
+            AND e.status = #{status}
+        </if>
+        <if test="userType != null and userType != ''">
+            AND u.user_type = #{userType}
+        </if>
+        <if test="keyword != null and keyword != ''">
+            AND (
+            e.etc_number LIKE CONCAT('%', #{keyword}, '%')
+            OR v.license_plate LIKE CONCAT('%', #{keyword}, '%')
+            OR u.real_name LIKE CONCAT('%', #{keyword}, '%')
+            OR u.phone LIKE CONCAT('%', #{keyword}, '%')
+            )
+        </if>
+        ORDER BY e.create_time DESC
+    </select>
+</mapper>

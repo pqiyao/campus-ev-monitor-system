@@ -1,0 +1,78 @@
+# OS and editor files
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# Java / Spring Boot
+**/target/
+**/build/
+*.class
+*.jar
+*.war
+*.log
+
+# Node / frontend dependencies and generated output
+**/node_modules/
+**/dist/
+**/.cache/
+**/.npm/
+**/unpackage/dist/
+
+# Python environments and generated files
+**/.venv/
+**/venv/
+**/env/
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+
+# Local secrets and runtime data
+.env
+.env.*
+*.db
+*.sqlite
+*.sqlite3
+
+# Large archives and media (keep source code and documentation in Git)
+*.zip
+*.7z
+*.rar
+*.tar
+*.gz
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.webm
+
+# Non-source assets and training data
+素材/
+项目文档/
+**/datasets/
+**/TestFiles/
+**/Font/
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.ico
+*.ttf
+*.woff
+*.woff2
+
+# Documentation and packaging metadata
+*.md
+*.cff
+LICENSE
+*.bat
+
+# Model/checkpoint binaries and generated exports
+*.pt
+*.pth
+*.onnx
+*.weights
+*.pkl
+*.pickle

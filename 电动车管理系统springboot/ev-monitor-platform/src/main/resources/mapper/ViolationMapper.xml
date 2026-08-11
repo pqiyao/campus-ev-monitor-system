@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.evmonitorplatform.mapper.ViolationMapper">
+
+    <resultMap id="ViolationResultMap" type="com.example.evmonitorplatform.entity.Violation">
+        <id     column="illegal_id"       property="illegalId"/>
+        <result column="vehicle_id"       property="vehicleId"/>
+        <result column="user_id"          property="userId"/>
+        <result column="illegal_type"     property="illegalType"/>
+        <result column="illegal_lng"      property="illegalLng"/>
+        <result column="illegal_lat"      property="illegalLat"/>
+        <result column="illegal_time"     property="illegalTime"/>
+        <result column="deduction_points" property="deductionPoints"/>
+        <result column="evidence_id"      property="evidenceId"/>
+        <result column="evidence_url"     property="evidenceUrl"/>
+        <result column="illegal_source"   property="illegalSource"/>
+        <result column="illegal_state"    property="illegalState"/>
+        <result column="create_time"      property="createTime"/>
+        <result column="update_time"      property="updateTime"/>
+        <result column="deleted"          property="deleted"/>
+        <!-- 联表字段 -->
+        <result column="license_plate"    property="licensePlate"/>
+        <result column="vehicle_photo"    property="vehiclePhoto"/>
+        <result column="owner_name"       property="ownerName"/>
+        <result column="illegal_type_name" property="illegalTypeName"/>
+        <result column="class_name" property="className"/>
+    </resultMap>
+
+    <select id="selectViolationPage" resultMap="ViolationResultMap">
+        SELECT
+        v.*,
+        ve.license_plate,
+        ve.vehicle_photo,
+        u.real_name AS owner_name,
+        u.class_name AS class_name,
+        vt.type_name AS illegal_type_name
+        FROM vehicle_illegal_record v
+        LEFT JOIN vehicle_info ve ON v.vehicle_id = ve.vehicle_id
+        LEFT JOIN `user` u ON v.user_id = u.user_id
+        LEFT JOIN violation_type vt ON v.illegal_type = vt.type_id
+        WHERE v.deleted = 0
+        <if test="query.illegalType != null">
+            AND v.illegal_type = #{query.illegalType}
+        </if>
+        <if test="query.illegalState != null">
+            AND v.illegal_state = #{query.illegalState}
+        </if>
+        <if test="query.vehiclePlate != null and query.vehiclePlate != ''">
+            AND ve.license_plate LIKE CONCAT('%', #{query.vehiclePlate}, '%')
+        </if>
+        <if test="query.ownerName != null and query.ownerName != ''">
+            AND u.real_name LIKE CONCAT('%', #{query.ownerName}, '%')
+        </if>
+        <if test="query.startTime != null and query.startTime != ''">
+            AND v.illegal_time >= #{query.startTime}
+        </if>
+        <if test="query.endTime != null and query.endTime != ''">
+            AND v.illegal_time &lt;= #{query.endTime}
+        </if>
+        <if test="query.className != null and query.className != ''">
+            AND u.class_name = #{query.className}
+        </if>
+        <if test="query.counselorId != null">
+            AND EXISTS (
+                SELECT 1 FROM counselor_class cc
+                WHERE cc.counselor_user_id = #{query.counselorId}
+                  AND cc.class_name &lt;=&gt; u.class_name
+            )
+        </if>
+        ORDER BY v.illegal_time DESC
+    </select>
+
+</mapper>

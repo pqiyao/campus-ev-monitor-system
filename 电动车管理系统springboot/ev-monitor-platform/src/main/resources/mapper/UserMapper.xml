@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.evmonitorplatform.mapper.UserMapper">
+
+    <resultMap id="UserResultMap" type="com.example.evmonitorplatform.entity.User">
+        <id     column="user_id"     property="userId"/>
+        <result column="username"    property="username"/>
+        <result column="password"    property="password"/>
+        <result column="real_name"   property="realName"/>
+        <result column="user_type"   property="userType"/>
+        <result column="student_id"  property="studentId"/>
+        <result column="job_id"      property="jobId"/>
+        <result column="phone"       property="phone"/>
+        <result column="email"       property="email"/>
+        <result column="avatar"      property="avatar"/>
+        <result column="department"  property="department"/>
+        <result column="college"     property="college"/>
+        <result column="major"       property="major"/>
+        <result column="class_name"  property="className"/>
+        <result column="status"      property="status"/>
+        <result column="license_points" property="licensePoints"/>
+        <result column="create_time" property="createTime"/>
+        <result column="update_time" property="updateTime"/>
+        <result column="deleted"     property="deleted"/>
+    </resultMap>
+
+    <select id="selectUserPage" resultMap="UserResultMap">
+        SELECT * FROM user
+        WHERE deleted = 0
+        <if test="keyword != null and keyword != ''">
+            AND (
+            username   LIKE CONCAT('%', #{keyword}, '%')
+            OR real_name LIKE CONCAT('%', #{keyword}, '%')
+            OR phone     LIKE CONCAT('%', #{keyword}, '%')
+            OR student_id LIKE CONCAT('%', #{keyword}, '%')
+            OR job_id     LIKE CONCAT('%', #{keyword}, '%')
+            )
+        </if>
+        <if test="userType != null and userType != ''">
+            AND user_type = #{userType}
+        </if>
+        <if test="status != null and status != ''">
+            AND status = #{status}
+        </if>
+        ORDER BY create_time DESC
+    </select>
+
+</mapper>

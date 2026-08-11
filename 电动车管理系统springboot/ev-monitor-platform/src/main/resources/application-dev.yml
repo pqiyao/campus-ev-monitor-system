@@ -1,0 +1,30 @@
+spring:
+  datasource:
+    url: jdbc:mysql://localhost:3306/ev_monitor?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    username: root
+    password: 1234
+  # ========== Redis 3.x 新配置写法 ==========
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      # 可选：补充你需要的其他 Redis 配置（如 database、timeout 等）
+      database: 0
+      timeout: 3000ms
+      # 显式指定客户端类型（默认 lettuce，建议加上）
+      client-type: lettuce
+
+# 开发环境日志级别
+logging:
+  level:
+    # 注意：这里的日志包名也要匹配你实际的项目包名！
+    # 如果你实际包名是 com.example.evmonitorplatform，要改成这个
+    com.example.evmonitorplatform: debug
+    org.springframework: info
+
+# 开发环境特殊配置
+ev-monitor:
+  debug: true
+  file:
+    upload-path: ./uploads/
+    max-size: 10MB

@@ -1,0 +1,28 @@
+{
+  "running": true,
+  "pid": 36548,
+  "startedAt": "2026-04-27T12:04:48.774Z",
+  "lastPushAt": null,
+  "ticks": 0,
+  "simulatedCount": 0,
+  "apiBase": "http://localhost:8083/api/location",
+  "config": {
+    "apiBase": "http://localhost:8083/api/location",
+    "token": "",
+    "count": 8,
+    "interval": 5000,
+    "ttlMinutes": 60,
+    "centerLng": 112.6827629,
+    "centerLat": 26.8860959,
+    "radiusMeters": 220,
+    "platePrefix": "湘D",
+    "speedMax": 24,
+    "batteryMin": 35,
+    "batteryMax": 98,
+    "clearOnStop": false
+  },
+  "lastError": "fetch failed",
+  "lastErrorAt": "2026-05-01T02:10:41.791Z",
+  "stopReason": null,
+  "stoppedAt": "2026-04-27T12:04:40.801Z"
+}

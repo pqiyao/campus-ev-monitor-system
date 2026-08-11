@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.evmonitorplatform.mapper.VehicleMapper">
+
+    <resultMap id="VehicleResultMap" type="com.example.evmonitorplatform.entity.Vehicle">
+        <id     column="vehicle_id"   property="vehicleId"/>
+        <result column="user_id"      property="userId"/>
+        <result column="license_plate" property="licensePlate"/>
+        <result column="brand"        property="brand"/>
+        <result column="color"        property="color"/>
+        <result column="frame_num"    property="frameNum"/>
+        <result column="battery_type" property="batteryType"/>
+        <result column="vehicle_type" property="vehicleType"/>
+        <result column="vehicle_photo" property="vehiclePhoto"/>
+        <result column="status"       property="status"/>
+        <result column="is_frozen"    property="isFrozen"/>
+        <result column="is_blacklist" property="isBlacklist"/>
+        <result column="register_time" property="registerTime"/>
+        <result column="audit_time"   property="auditTime"/>
+        <result column="audit_user_id" property="auditUserId"/>
+        <result column="valid_date"   property="validDate"/>
+        <result column="create_time"  property="createTime"/>
+        <result column="update_time"  property="updateTime"/>
+        <result column="deleted"      property="deleted"/>
+        <!-- 联表字段 -->
+        <result column="owner_name"   property="ownerName"/>
+        <result column="phone"        property="phone"/>
+        <result column="etc_number"   property="etcNumber"/>
+        <result column="gps_status"   property="gpsStatus"/>
+        <result column="battery"      property="battery"/>
+    </resultMap>
+
+    <select id="selectVehiclePage" resultMap="VehicleResultMap">
+        SELECT
+        v.*,
+        u.real_name  AS owner_name,
+        u.phone      AS phone,
+        e.etc_number AS etc_number,
+        d.status     AS gps_status,
+        d.battery_level AS battery
+        FROM vehicle_info v
+        LEFT JOIN `user` u        ON v.user_id   = u.user_id
+        LEFT JOIN etc_card e    ON v.vehicle_id = e.vehicle_id
+        LEFT JOIN location_device d ON v.vehicle_id = d.vehicle_id
+        WHERE v.deleted = 0
+        <if test="query.userId != null">
+            AND v.user_id = #{query.userId}
+        </if>
+        <if test="query.licensePlate != null and query.licensePlate != ''">
+            AND v.license_plate LIKE CONCAT('%', #{query.licensePlate}, '%')
+        </if>
+        <if test="query.userType != null and query.userType != ''">
+            AND u.user_type = #{query.userType}
+        </if>
+        <if test="query.status != null and query.status != ''">
+            AND v.status = #{query.status}
+        </if>
+        <if test="query.isBlacklist != null">
+            AND v.is_blacklist = #{query.isBlacklist}
+        </if>
+        <if test="query.startTime != null and query.startTime != ''">
+            AND v.register_time >= #{query.startTime}
+        </if>
+        <if test="query.endTime != null and query.endTime != ''">
+            AND v.register_time &lt;= #{query.endTime}
+        </if>
+        ORDER BY v.create_time DESC
+    </select>
+
+</mapper>

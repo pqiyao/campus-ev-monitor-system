@@ -1,0 +1,128 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.evmonitorplatform.mapper.AppealRecordMapper">
+
+    <resultMap id="AppealRecordResultMap" type="com.example.evmonitorplatform.entity.AppealRecord">
+        <id column="appeal_id" property="appealId"/>
+        <result column="illegal_id" property="illegalId"/>
+        <result column="user_id" property="userId"/>
+        <result column="appeal_reason" property="appealReason"/>
+        <result column="appeal_evidence" property="appealEvidence"/>
+        <result column="appeal_time" property="appealTime"/>
+        <result column="appeal_state" property="appealState"/>
+        <result column="appeal_source" property="appealSource"/>
+        <result column="urgency_level" property="urgencyLevel"/>
+        <result column="audit_user_id" property="auditUserId"/>
+        <result column="audit_opinion" property="auditOpinion"/>
+        <result column="appeal_result" property="appealResult"/>
+        <result column="reject_reason" property="rejectReason"/>
+        <result column="evidence_photos" property="evidencePhotos"/>
+        <result column="audit_time" property="auditTime"/>
+        <result column="create_time" property="createTime"/>
+        <result column="update_time" property="updateTime"/>
+
+        <!-- 关联字段 -->
+        <result column="user_name" property="userName"/>
+        <result column="user_phone" property="userPhone"/>
+        <result column="student_class_name" property="className"/>
+        <result column="user_type" property="userType"/>
+        <result column="audit_user_name" property="auditUserName"/>
+        <result column="license_plate" property="licensePlate"/>
+        <result column="illegal_type" property="illegalType"/>
+        <result column="illegal_type_name" property="illegalTypeName"/>
+        <result column="vehicle_photo" property="vehiclePhoto"/>
+        <result column="evidence_url" property="evidenceUrl"/>
+    </resultMap>
+
+    <select id="selectAppealPage" resultMap="AppealRecordResultMap">
+        SELECT a.*,
+        u.real_name as user_name,
+        u.phone as user_phone,
+        u.user_type as user_type,
+        au.real_name as audit_user_name,
+        v.license_plate,
+        v.illegal_type as illegal_type,
+        vt.description as illegal_type_name
+        FROM illegal_appeal_record a
+        LEFT JOIN `user` u ON a.user_id = u.user_id
+        LEFT JOIN `user` au ON a.audit_user_id = au.user_id
+        LEFT JOIN vehicle_illegal_record v ON a.illegal_id = v.illegal_id
+        LEFT JOIN violation_type vt ON v.illegal_type = vt.type_id
+        WHERE 1=1
+        <if test="query.appealId != null">
+            AND a.appeal_id = #{query.appealId}
+        </if>
+        <if test="query.illegalId != null">
+            AND a.illegal_id = #{query.illegalId}
+        </if>
+        <if test="query.userId != null">
+            AND a.user_id = #{query.userId}
+        </if>
+        <if test="query.appealState != null">
+            AND a.appeal_state = #{query.appealState}
+        </if>
+        <if test="query.appealResult != null">
+            AND a.appeal_result = #{query.appealResult}
+        </if>
+        <if test="query.auditUserId != null">
+            AND a.audit_user_id = #{query.auditUserId}
+        </if>
+        <if test="query.appealSource != null and query.appealSource != ''">
+            AND a.appeal_source = #{query.appealSource}
+        </if>
+        <if test="query.urgencyLevel != null">
+            AND a.urgency_level = #{query.urgencyLevel}
+        </if>
+        <if test="query.startTime != null and query.startTime != ''">
+            AND a.appeal_time >= #{query.startTime}
+        </if>
+        <if test="query.endTime != null and query.endTime != ''">
+            AND a.appeal_time &lt;= #{query.endTime}
+        </if>
+
+        <!-- 车牌号过滤 -->
+        <if test="query.licensePlate != null and query.licensePlate != ''">
+            AND v.license_plate LIKE CONCAT('%', #{query.licensePlate}, '%')
+        </if>
+
+        <!-- 用户姓名过滤 -->
+        <if test="query.userName != null and query.userName != ''">
+            AND u.real_name LIKE CONCAT('%', #{query.userName}, '%')
+        </if>
+
+        <!-- 用户手机号过滤 -->
+        <if test="query.userPhone != null and query.userPhone != ''">
+            AND u.phone LIKE CONCAT('%', #{query.userPhone}, '%')
+        </if>
+        <if test="query.counselorId != null">
+            AND EXISTS (
+                SELECT 1 FROM counselor_class cc
+                WHERE cc.counselor_user_id = #{query.counselorId}
+                  AND cc.class_name &lt;=&gt; u.class_name
+            )
+        </if>
+
+        <choose>
+            <when test="query.orderBy != null and query.orderBy != ''">
+                ORDER BY
+                <choose>
+                    <when test="query.orderBy == 'appeal_time'">a.appeal_time</when>
+                    <when test="query.orderBy == 'audit_time'">a.audit_time</when>
+                    <when test="query.orderBy == 'create_time'">a.create_time</when>
+                    <when test="query.orderBy == 'urgency_level'">a.urgency_level</when>
+                    <otherwise>a.appeal_time</otherwise>
+                </choose>
+                <choose>
+                    <when test="query.orderDirection != null and query.orderDirection == 'asc'">ASC</when>
+                    <otherwise>DESC</otherwise>
+                </choose>
+            </when>
+            <otherwise>
+                ORDER BY a.appeal_time DESC
+            </otherwise>
+        </choose>
+    </select>
+
+    <!-- 其他SQL语句已经在Mapper接口中通过注解定义 -->
+
+</mapper>

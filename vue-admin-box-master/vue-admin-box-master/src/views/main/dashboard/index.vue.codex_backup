@@ -1,0 +1,474 @@
+﻿<template>
+  <div class="dashboard-page">
+    <header class="dashboard-header">
+      <div>
+        <h1>校园电动车监测看板</h1>
+        <p>当前时间：{{ nowText }}</p>
+      </div>
+      <div class="header-actions">
+        <el-tag type="success" effect="dark">当前用户：{{ currentUserName }}</el-tag>
+        <el-button type="primary" :loading="loading" @click="refreshAll">刷新数据</el-button>
+      </div>
+    </header>
+
+    <section class="cards">
+      <article class="card">
+        <span class="card-title">总案件</span>
+        <strong class="card-value">{{ statistics.totalCases }}</strong>
+      </article>
+      <article class="card">
+        <span class="card-title">已处理</span>
+        <strong class="card-value">{{ statistics.processedCases }}</strong>
+      </article>
+      <article class="card">
+        <span class="card-title">投诉案件</span>
+        <strong class="card-value">{{ statistics.complaintCases }}</strong>
+      </article>
+      <article class="card">
+        <span class="card-title">在线车辆</span>
+        <strong class="card-value">{{ locationStats.online }}</strong>
+      </article>
+    </section>
+
+    <section class="panels two-col">
+      <article class="panel">
+        <div class="panel-title">天气与摄像头</div>
+        <p class="panel-line">
+          天气：{{ weather.condition }} / {{ weather.temperature }}°C / 湿度 {{ weather.humidity }}%
+        </p>
+        <div class="camera-list">
+          <el-tag
+            v-for="camera in cameras"
+            :key="camera.id || camera.name"
+            :type="camera.status === 'online' ? 'success' : 'info'"
+            class="camera-tag"
+          >
+            {{ camera.name || '未命名摄像头' }} - {{ camera.status === 'online' ? '在线' : '离线' }}
+          </el-tag>
+          <el-empty v-if="cameras.length === 0" description="暂无摄像头数据" :image-size="70" />
+        </div>
+      </article>
+
+      <article class="panel">
+        <div class="panel-title">预警信息</div>
+        <ul v-if="alerts.length > 0" class="alert-list">
+          <li v-for="(item, idx) in alerts" :key="idx">
+            <div class="alert-top">
+              <span>{{ item.location || '未知位置' }}</span>
+              <small>{{ item.time || '--' }}</small>
+            </div>
+            <p>{{ item.description || '无描述' }}</p>
+          </li>
+        </ul>
+        <el-empty v-else description="暂无预警" :image-size="70" />
+      </article>
+    </section>
+
+    <section class="panels two-col">
+      <article class="panel">
+        <div class="panel-title">最新违规记录</div>
+        <el-table :data="violations" stripe size="small" height="300">
+          <el-table-column prop="licensePlate" label="车牌" min-width="110" />
+          <el-table-column prop="illegalTypeName" label="违规类型" min-width="120" />
+          <el-table-column prop="illegalTime" label="违规时间" min-width="170" />
+          <el-table-column label="状态" min-width="90">
+            <template #default="scope">
+              <el-tag :type="getViolationStateTag(scope.row.illegalState)">
+                {{ getViolationStateText(scope.row.illegalState) }}
+              </el-tag>
+            </template>
+          </el-table-column>
+        </el-table>
+      </article>
+
+      <article class="panel">
+        <div class="panel-title">实时位置概览</div>
+        <div class="location-stats">
+          <span>总数：{{ locationStats.total }}</span>
+          <span>在线：{{ locationStats.online }}</span>
+          <span>离线：{{ locationStats.offline }}</span>
+          <span>低电量：{{ locationStats.lowBattery }}</span>
+        </div>
+        <el-input
+          v-model="locationKeyword"
+          placeholder="按车牌/车主/设备号筛选"
+          clearable
+          size="small"
+          class="location-search"
+        />
+        <ul class="location-list" v-if="filteredLocations.length > 0">
+          <li v-for="item in filteredLocations.slice(0, 12)" :key="item.licensePlate || item.deviceId">
+            <div class="location-top">
+              <strong>{{ item.licensePlate || '未绑定设备' }}</strong>
+              <el-tag size="small" :type="item.status === 'online' ? 'success' : 'info'">
+                {{ item.status === 'online' ? '在线' : '离线' }}
+              </el-tag>
+            </div>
+            <div class="location-meta">
+              <span>车主：{{ item.ownerName || '--' }}</span>
+              <span>电量：{{ item.battery ?? '--' }}%</span>
+              <span>坐标：{{ formatCoord(item.lat, item.lng) }}</span>
+            </div>
+          </li>
+        </ul>
+        <el-empty v-else description="暂无位置数据" :image-size="70" />
+      </article>
+    </section>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { ElMessage } from 'element-plus'
+import store from '@/store'
+import request from '@/utils/system/request'
+
+interface LocationItem {
+  licensePlate?: string
+  deviceId?: string
+  ownerName?: string
+  battery?: number
+  status?: string
+  lat?: number
+  lng?: number
+}
+
+const loading = ref(false)
+const now = ref(new Date())
+const clockTimer = ref<number | null>(null)
+
+const statistics = reactive({
+  totalCases: 0,
+  processedCases: 0,
+  complaintCases: 0
+})
+
+const weather = reactive({
+  condition: '--',
+  temperature: '--',
+  humidity: '--'
+})
+
+const alerts = ref<any[]>([])
+const cameras = ref<any[]>([])
+const violations = ref<any[]>([])
+const locations = ref<LocationItem[]>([])
+const locationKeyword = ref('')
+
+const currentUserName = computed(() => {
+  return store?.state?.user?.info?.realName || store?.state?.user?.info?.username || '未知用户'
+})
+
+const nowText = computed(() => {
+  return now.value.toLocaleString('zh-CN', { hour12: false })
+})
+
+const filteredLocations = computed(() => {
+  const keyword = locationKeyword.value.trim().toLowerCase()
+  if (!keyword) return locations.value
+
+  return locations.value.filter((item) => {
+    return [item.licensePlate, item.ownerName, item.deviceId]
+      .filter(Boolean)
+      .some((text) => String(text).toLowerCase().includes(keyword))
+  })
+})
+
+const locationStats = computed(() => {
+  const total = locations.value.length
+  const online = locations.value.filter((item) => item.status === 'online').length
+  const offline = total - online
+  const lowBattery = locations.value.filter((item) => Number(item.battery ?? 100) <= 20).length
+  return { total, online, offline, lowBattery }
+})
+
+function pickNumber(source: any, keys: string[], fallback = 0): number {
+  for (const key of keys) {
+    const value = source?.[key]
+    if (value !== undefined && value !== null && !Number.isNaN(Number(value))) {
+      return Number(value)
+    }
+  }
+  return fallback
+}
+
+async function fetchDashboard() {
+  const res = await request.get('/api/monitor/dashboard')
+  const data = res?.data || {}
+  const stat = data.statistics || {}
+
+  statistics.totalCases = pickNumber(stat, ['totalCases', 'total', 'all'])
+  statistics.processedCases = pickNumber(stat, ['processedCases', 'processed', 'done'])
+  statistics.complaintCases = pickNumber(stat, ['complaintCases', 'complaint', 'appeal'])
+
+  alerts.value = Array.isArray(data.alerts) ? data.alerts : []
+  cameras.value = Array.isArray(data.cameras) ? data.cameras : []
+
+  weather.condition = data.weather?.condition || '--'
+  weather.temperature = data.weather?.temperature ?? '--'
+  weather.humidity = data.weather?.humidity ?? '--'
+}
+
+async function fetchViolations() {
+  const res = await request.get('/api/violation/list', {
+    params: { pageNum: 1, pageSize: 8 }
+  })
+  violations.value = Array.isArray(res?.data) ? res.data : []
+}
+
+async function fetchLocations() {
+  const res = await request.get('/api/location/all')
+  locations.value = Array.isArray(res?.data) ? res.data : []
+}
+
+async function refreshAll() {
+  loading.value = true
+  const results = await Promise.allSettled([fetchDashboard(), fetchViolations(), fetchLocations()])
+  loading.value = false
+
+  const failed = results.filter((item) => item.status === 'rejected').length
+  if (failed > 0) {
+    ElMessage.warning(`部分数据加载失败（${failed}/3），请检查接口或登录状态`)
+  }
+}
+
+function getViolationStateText(state: number) {
+  switch (Number(state)) {
+    case 0:
+      return '待处理'
+    case 1:
+      return '整改中'
+    case 2:
+      return '已完成'
+    default:
+      return '未知'
+  }
+}
+
+function getViolationStateTag(state: number) {
+  switch (Number(state)) {
+    case 0:
+      return 'danger'
+    case 1:
+      return 'warning'
+    case 2:
+      return 'success'
+    default:
+      return 'info'
+  }
+}
+
+function formatCoord(lat?: number, lng?: number) {
+  if (lat === undefined || lng === undefined || lat === null || lng === null) {
+    return '--'
+  }
+  return `${Number(lat).toFixed(5)}, ${Number(lng).toFixed(5)}`
+}
+
+onMounted(() => {
+  clockTimer.value = window.setInterval(() => {
+    now.value = new Date()
+  }, 1000)
+
+  refreshAll()
+})
+
+onBeforeUnmount(() => {
+  if (clockTimer.value) {
+    window.clearInterval(clockTimer.value)
+  }
+})
+</script>
+
+<style scoped>
+.dashboard-page {
+  min-height: 100%;
+  padding: 16px;
+  background: #f4f7fb;
+  box-sizing: border-box;
+}
+
+.dashboard-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
+}
+
+.dashboard-header h1 {
+  margin: 0;
+  font-size: 22px;
+  color: #1f2937;
+}
+
+.dashboard-header p {
+  margin: 8px 0 0;
+  color: #6b7280;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.cards {
+  margin-top: 16px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.card {
+  padding: 14px;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
+}
+
+.card-title {
+  color: #6b7280;
+  font-size: 13px;
+}
+
+.card-value {
+  display: block;
+  margin-top: 8px;
+  color: #111827;
+  font-size: 28px;
+  line-height: 1;
+}
+
+.panels {
+  margin-top: 16px;
+}
+
+.two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.panel {
+  padding: 14px;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
+}
+
+.panel-title {
+  margin-bottom: 10px;
+  color: #111827;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.panel-line {
+  color: #4b5563;
+}
+
+.camera-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.camera-tag {
+  margin-right: 0;
+}
+
+.alert-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.alert-list li {
+  padding: 10px;
+  border-radius: 8px;
+  background: #f8fafc;
+  margin-bottom: 8px;
+}
+
+.alert-top {
+  display: flex;
+  justify-content: space-between;
+  color: #111827;
+  margin-bottom: 6px;
+}
+
+.alert-list p {
+  margin: 0;
+  color: #4b5563;
+}
+
+.location-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 10px;
+  color: #4b5563;
+}
+
+.location-search {
+  margin-bottom: 10px;
+}
+
+.location-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 260px;
+  overflow: auto;
+}
+
+.location-list li {
+  padding: 10px;
+  border-radius: 8px;
+  background: #f8fafc;
+  margin-bottom: 8px;
+}
+
+.location-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.location-meta {
+  margin-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  color: #4b5563;
+  font-size: 13px;
+}
+
+@media (max-width: 1200px) {
+  .cards {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .two-col {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .dashboard-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  .cards {
+    grid-template-columns: 1fr;
+  }
+}
+</style>

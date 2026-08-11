@@ -1,0 +1,106 @@
+{
+  "pages": [
+    {
+      "path": "pages/login/login",
+      "style": {
+        "navigationBarTitleText": "登录"
+      }
+    },
+    {
+      "path": "pages/home/home",
+      "style": {
+        "navigationBarTitleText": "首页",
+        "enablePullDownRefresh": true,
+        "backgroundTextStyle": "dark"
+      }
+    },
+    {
+      "path": "pages/service/service",
+      "style": {
+        "navigationBarTitleText": "服务"
+      }
+    },
+    {
+      "path": "pages/register/register",
+      "style": {
+        "navigationBarTitleText": "注册"
+      }
+    },
+    {
+      "path": "pages/vehicle/vehicle",
+      "style": {
+        "navigationBarTitleText": "车辆信息"
+      }
+    },
+    {
+      "path": "pages/rfid/rfid",
+      "style": {
+        "navigationBarTitleText": "BLE 标签管理",
+        "enablePullDownRefresh": true
+      }
+    },
+    {
+      "path": "pages/location/location",
+      "style": {
+        "navigationBarTitleText": "车辆定位"
+      }
+    },
+    {
+      "path": "pages/violation/violation",
+      "style": {
+        "navigationBarTitleText": "违规与整改"
+      }
+    },
+    {
+      "path": "pages/appeal-detail/appeal-detail",
+      "style": {
+        "navigationBarTitleText": "申诉详情"
+      }
+    },
+    {
+      "path": "pages/notification-detail/notification-detail",
+      "style": {
+        "navigationBarTitleText": "通知详情"
+      }
+    },
+    {
+      "path": "pages/password/password",
+      "style": {
+        "navigationBarTitleText": "修改密码"
+      }
+    },
+    {
+      "path": "pages/license-points/license-points",
+      "style": {
+        "navigationBarTitleText": "记分与公益"
+      }
+    }
+  ],
+  "globalStyle": {
+    "navigationBarTextStyle": "black",
+    "navigationBarTitleText": "校园电动车",
+    "navigationBarBackgroundColor": "#edf8f6",
+    "backgroundColor": "#f4f8fb"
+  },
+  "tabBar": {
+    "color": "#64748b",
+    "selectedColor": "#0f8f83",
+    "backgroundColor": "#ffffff",
+    "borderStyle": "white",
+    "list": [
+      {
+        "pagePath": "pages/home/home",
+        "text": "首页",
+        "iconPath": "static/tab-home.png",
+        "selectedIconPath": "static/tab-home-active.png"
+      },
+      {
+        "pagePath": "pages/service/service",
+        "text": "服务",
+        "iconPath": "static/tab-svc.png",
+        "selectedIconPath": "static/tab-svc-active.png"
+      }
+    ]
+  },
+  "uniIdRouter": {}
+}

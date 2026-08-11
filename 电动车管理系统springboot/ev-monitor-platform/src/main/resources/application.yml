@@ -1,0 +1,93 @@
+server:
+  port: 8083
+
+spring:
+  application:
+    name: ev-monitor-platform
+  profiles:
+    active: dev
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 50MB
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://localhost:3306/ev_monitor?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    username: root
+    password: 1234
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+  jackson:
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: GMT+8
+  # ========== Redis ?????? Spring Boot 3.x? ==========
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      database: 0
+      timeout: 3000ms
+      # ????????????? lettuce????????
+      client-type: lettuce
+      lettuce:
+        pool:
+          max-size: 20 # ??? max-active
+          max-idle: 10 # ??????????
+          min-idle: 5 # ??????????
+          max-wait: -1ms # ??????????-1 ??????????
+
+mybatis-plus:
+  mapper-locations: classpath:mapper/*.xml
+  type-aliases-package: com.ev.monitor.entity
+  configuration:
+    map-underscore-to-camel-case: true
+#    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+
+#logging:
+#  level:
+#    com.ev.monitor: debug
+#  file:
+#    name: logs/app.log
+#  logback:
+#    rollingpolicy:
+#      max-file-size: 10MB
+#      max-history: 30
+
+ev:
+  license:
+    max-points: 12
+
+ev-monitor:
+  tcp:
+    port: 9999
+  mqtt:
+    broker: tcp://180.184.41.179:1883 # 改成远程服务器
+    client-id: ev-monitor-backend
+    username: "admin" # 你登录EMQX后台的账号
+    password: "Aa123456" # 你登录EMQX后台的密码
+    #    topic-location: ev/location/#       # 订阅所有车辆位置
+    topic-location: position
+    topic-violation: ev/violation # 订阅违规上报
+  parking:
+    stationary-minutes: 150 # 非停车区静置约 2.5 小时记违停（可按需改为 120/180）
+    move-threshold-meters: 35 # 位移小于此值视为「未移动」
+  violation:
+    illegal-parking-type-id: 1 # violation_type.type_id，需与库中「违停」类一致
+  location:
+    stale-seconds: 300 # 超过5分钟无更新视为离线
+    push-interval-ms: 3000 # 前端推送间隔
+    sim-ttl-minutes: 1440 # 地图演示点 Redis 过期时间（分钟），默认 24h；DELETE /api/location/sim 可一键清除
+  file:
+    upload-path: D:/uploads/
+    max-size: 10MB
+  jwt:
+    # HS256：密钥 UTF-8 长度建议 ≥ 32 字符；过短会在 JwtUtil 内用 SHA-256 派生
+    secret: ev-monitor-platform-jwt-hmac-sha256-secret-2024
+    expire: 86400
+  baidu-map:
+    # 与 vue-admin 大屏（dashboard / 全屏）一致；学生端通过 GET /api/client/config 拉取
+    ak: xknWuzJzZ2EGrfFxkYfWyJANAs46sxQM
