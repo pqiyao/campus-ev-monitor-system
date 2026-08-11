@@ -21,6 +21,7 @@
             <div class="infrared-box" id="infrared_box">
               <!-- 巡检画面 -->
               <video
+                v-if="simulationVideoEnabled"
                 ref="videoRef"
                 v-show="cameraReady"
                 class="infrared-video"
@@ -33,11 +34,11 @@
               ></video>
 
               <div
-                v-show="!cameraReady"
+                v-show="!simulationVideoEnabled || !cameraReady"
                 class="device-standby"
               >
-                <div class="standby-title">红外画面未启动</div>
-                <div class="standby-desc">请启动巡检画面或接入红外设备</div>
+                <div class="standby-title">{{ simulationVideoEnabled ? '红外画面未启动' : '模拟视频已关闭' }}</div>
+                <div class="standby-desc">{{ simulationVideoEnabled ? '请启动巡检画面或接入红外设备' : '等待接入真实红外设备' }}</div>
               </div>
 
               <!-- 高温区域框 -->
@@ -56,11 +57,11 @@
 
               <!-- 视频控制覆盖层 -->
               <div class="video-controls">
-                <button class="control-btn play-btn" @click="togglePlay">
+                <button v-if="simulationVideoEnabled" class="control-btn play-btn" @click="togglePlay">
                   <span>{{ isPlaying ? '⏸️ 暂停' : '▶️ 播放' }}</span>
                 </button>
 
-                <button class="control-btn" @click="startCamera">
+                <button v-if="simulationVideoEnabled" class="control-btn" @click="startCamera">
                   <span>📷 启动画面</span>
                 </button>
 
@@ -72,7 +73,7 @@
                   <span>✅ 恢复正常</span>
                 </button>
 
-                <button class="control-btn fullscreen-btn" @click="toggleFullscreen('infrared')">
+                <button v-if="simulationVideoEnabled" class="control-btn fullscreen-btn" @click="toggleFullscreen('infrared')">
                   <span>🖥️ 全屏</span>
                 </button>
               </div>
@@ -174,12 +175,13 @@
                   <span class="camera-name">红外巡检画面（{{ currentDate }}）</span>
                   <span class="camera-actions">
                     <span class="camera-status" :class="cameraReady ? 'online' : 'warning'">
-                      {{ cameraReady ? '在线' : '未启动' }}
+                      {{ simulationVideoEnabled ? (cameraReady ? '在线' : '未启动') : '已关闭' }}
                     </span>
                   </span>
                 </div>
                 <div class="camera-video">
                   <video
+                    v-if="simulationVideoEnabled"
                     ref="miniVideoRef"
                     v-show="cameraReady"
                     class="camera-img camera-video-live"
@@ -190,10 +192,10 @@
                     playsinline
                   ></video>
                   <div
-                    v-show="!cameraReady"
+                    v-show="!simulationVideoEnabled || !cameraReady"
                     class="camera-placeholder"
                   >
-                    设备画面未启动
+                    {{ simulationVideoEnabled ? '设备画面未启动' : '模拟视频已关闭' }}
                   </div>
                 </div>
               </div>
@@ -551,6 +553,7 @@ import { getUserInfo } from '@/utils/auth'
 const API_BASE_URL = getApiBaseUrl()
 const THERMAL_VIOLATION_TYPE = 3
 const THERMAL_THRESHOLD = 60
+const simulationVideoEnabled = false
 const infraredVideoSrc = '/video/infrared-monitor.mp4'
 const DEFAULT_COORDINATE = {
   lng: 112.682763,
@@ -1212,6 +1215,7 @@ const sendHighTempNotification = async record => {
 }
 
 const startCamera = async () => {
+  if (!simulationVideoEnabled) return
   cameraError.value = ''
 
   try {
@@ -1530,7 +1534,6 @@ onMounted(() => {
   window.addEventListener('resize', resizeHandler)
 
   initializePageData()
-  startCamera()
 
   dataTimer = setInterval(() => {
     fetchOverviewData({ silent: true })

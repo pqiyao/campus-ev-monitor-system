@@ -1862,7 +1862,7 @@ const loadBaiduMapAPI = () => {
   }
   const script = document.createElement('script')
   script.type = 'text/javascript'
-  script.src = 'https://api.map.baidu.com/api?type=webgl&v=1.0&ak=rKf75mlV6xmAQYgz7gZGVxQHwb8fCf6e&callback=baiduMapInit'
+  script.src = 'https://api.map.baidu.com/api?type=webgl&v=1.0&ak=SUBe4C3SHSL9Uyd9P4xgq6GMdaZF2Irj&callback=baiduMapInit'
   window.baiduMapInit = () => {
     if (typeof BMapGL === 'undefined') {
       ElMessage.error('百度地图底图脚本未就绪，请刷新页面')

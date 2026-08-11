@@ -768,7 +768,7 @@ const initFenceMap = () => {
   })
 }
 
-const BAIDU_MAP_AK = 'rKf75mlV6xmAQYgz7gZGVxQHwb8fCf6e'
+const BAIDU_MAP_AK = 'SUBe4C3SHSL9Uyd9P4xgq6GMdaZF2Irj'
 
 const loadBaiduMapScript = () => {
   if (typeof BMapGL !== 'undefined') {

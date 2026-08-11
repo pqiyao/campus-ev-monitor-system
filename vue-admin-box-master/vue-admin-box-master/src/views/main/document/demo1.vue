@@ -952,7 +952,7 @@ const initMap = () => {
 const loadBaiduMapAPI = () => {
   if (typeof BMap !== 'undefined') { initMap(); return }
   const script = document.createElement('script')
-  script.src = 'https://api.map.baidu.com/api?v=3.0&ak=rKf75mlV6xmAQYgz7gZGVxQHwb8fCf6e&callback=initBaiduMap'
+  script.src = 'https://api.map.baidu.com/api?v=3.0&ak=SUBe4C3SHSL9Uyd9P4xgq6GMdaZF2Irj&callback=initBaiduMap'
   window.initBaiduMap = initMap
   script.onerror = () => ElMessage.error('百度地图API加载失败')
   document.head.appendChild(script)
