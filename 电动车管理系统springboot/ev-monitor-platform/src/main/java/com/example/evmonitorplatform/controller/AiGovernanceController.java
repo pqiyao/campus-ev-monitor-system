@@ -13,9 +13,18 @@ import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.security.core.Authentication;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.web.multipart.MultipartFile;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 @RestController
 @RequestMapping("/api/ai")
@@ -24,6 +33,9 @@ public class AiGovernanceController {
     private final AiGovernanceService governanceService;
     private final AiGovernanceProperties properties;
     private final UserMapper userMapper;
+
+    @Value("${ev-monitor.file.upload-path}")
+    private String uploadPath;
 
     @PostMapping("/demo/run")
     public ApiResponse<Map<String, Object>> runDemo(@RequestBody(required = false) AiDemoRunRequest request) { return ApiResponse.success(governanceService.runDemo(request)); }
@@ -34,6 +46,39 @@ public class AiGovernanceController {
                                                     @RequestHeader(value = "X-AI-Ingest-Key", required = false) String ingestKey) {
         requireAdminOrIngestKey(authentication, ingestKey);
         return ApiResponse.success(governanceService.ingest(request));
+    }
+
+    @PostMapping("/evidence/upload")
+    public ApiResponse<Map<String, String>> uploadEvidence(@RequestParam("file") MultipartFile file,
+                                                            Authentication authentication,
+                                                            @RequestHeader(value = "X-AI-Ingest-Key", required = false) String ingestKey) {
+        requireAdminOrIngestKey(authentication, ingestKey);
+        if (file == null || file.isEmpty()) throw new BusinessException("证据图片不能为空");
+        String contentType = file.getContentType();
+        if (contentType == null || !List.of("image/jpeg", "image/png", "image/webp").contains(contentType)) {
+            throw new BusinessException("证据只允许 JPG、PNG 或 WEBP 图片");
+        }
+        if (file.getSize() > 10L * 1024 * 1024) throw new BusinessException("证据图片不能超过10MB");
+        String extension = switch (contentType) {
+            case "image/png" -> ".png";
+            case "image/webp" -> ".webp";
+            default -> ".jpg";
+        };
+        String datePath = LocalDate.now().format(DateTimeFormatter.ofPattern("yyyy/MM/dd"));
+        Path root = Paths.get(uploadPath).toAbsolutePath().normalize();
+        Path directory = root.resolve(Paths.get("ai-evidence", datePath)).normalize();
+        if (!directory.startsWith(root)) throw new BusinessException("证据保存路径无效");
+        try {
+            Files.createDirectories(directory);
+            String filename = UUID.randomUUID().toString().replace("-", "") + extension;
+            Path target = directory.resolve(filename).normalize();
+            try (java.io.InputStream input = file.getInputStream()) {
+                Files.copy(input, target);
+            }
+            return ApiResponse.success(Map.of("fileUrl", "/uploads/ai-evidence/" + datePath + "/" + filename));
+        } catch (IOException ex) {
+            throw new BusinessException("证据图片保存失败：" + ex.getMessage());
+        }
     }
 
     @GetMapping("/events")

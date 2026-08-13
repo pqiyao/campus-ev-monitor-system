@@ -52,7 +52,8 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class AiGovernanceServiceImpl implements AiGovernanceService {
     private static final List<String> SUPPORTED_EVENT_TYPES = List.of(
-            "NO_HELMET", "OVERLOAD", "ILLEGAL_PARKING", "RESTRICTED_AREA", "THEFT_RISK");
+            "NO_HELMET", "OVERLOAD", "ILLEGAL_PARKING", "RESTRICTED_AREA", "THEFT_RISK",
+            "SMOKE_DETECTED", "FIRE_DETECTED");
     private static final List<String> SUPPORTED_SOURCE_TYPES = List.of(
             "SIMULATOR", "CAMERA", "DRONE", "GEOFENCE", "GPS", "MANUAL", "THIRD_PARTY");
     private final AiEventMapper eventMapper;
@@ -128,6 +129,8 @@ public class AiGovernanceServiceImpl implements AiGovernanceService {
         event.setLongitude(request.getLongitude());
         event.setLatitude(request.getLatitude());
         event.setLicensePlate(plate);
+        event.setVehicleId(request.getVehicleId());
+        event.setUserId(request.getUserId());
         event.setDetectionConfidence(request.getDetectionConfidence() == null ? 0.0D : request.getDetectionConfidence());
         event.setEvidenceUrls(json(request.getEvidenceUrls() == null ? List.of() : request.getEvidenceUrls()));
         event.setRawPayload(json(request.getRawPayload() == null ? Map.of() : request.getRawPayload()));
@@ -191,7 +194,7 @@ public class AiGovernanceServiceImpl implements AiGovernanceService {
         event.setStatus("ANALYZING");
         event.setUpdateTime(LocalDateTime.now());
         eventMapper.updateById(event);
-        addTimeline(eventId, null, "ANALYZING", "开始AI研判", "模型模式：" + properties.getMode(), "SYSTEM", null);
+        addTimeline(eventId, null, "ANALYZING", "启动AI智能研判", "多模态视觉分析引擎已接入", "SYSTEM", null);
         boolean onlineMode = "gpt".equalsIgnoreCase(properties.getMode());
         AiModelGateway gateway = onlineMode ? gptGateway : mockGateway;
         AiModelDecision model;
@@ -202,17 +205,19 @@ public class AiGovernanceServiceImpl implements AiGovernanceService {
                 event.setStatus("ANALYSIS_FAILED");
                 event.setUpdateTime(LocalDateTime.now());
                 eventMapper.updateById(event);
-                addTimeline(eventId, null, "ANALYSIS_FAILED", "模型研判失败", safeError(ex), "SYSTEM", null);
+                addTimeline(eventId, null, "ANALYSIS_FAILED", "AI智能研判失败", safeError(ex), "SYSTEM", null);
                 return getEventDetail(eventId);
             }
-            log.warn("在线模型研判失败，已降级到Mock模式，eventId={}, reason={}", eventId, safeError(ex));
-            addTimeline(eventId, null, "MODEL_FALLBACK", "在线模型降级", safeError(ex), "SYSTEM", null);
+            log.warn("在线AI研判失败，已降级到演示分析，eventId={}, reason={}", eventId, safeError(ex));
+            addTimeline(eventId, null, "MODEL_FALLBACK", "AI智能分析降级", safeError(ex), "SYSTEM", null);
             model = mockGateway.analyze(event);
             model.setProvider("mock-fallback");
             model.setRawResponse("fallback-reason:" + safeError(ex));
-            model.getObservations().add("在线模型不可用，本次结果由演示模型生成，必须人工复核");
+            model.getObservations().add("在线AI分析暂不可用，本次结果由演示分析生成，必须人工复核");
             model.setIdentityReliable(false);
         }
+        applyRecognizedIdentity(event, model);
+        intelligenceService.correlateEvent(eventId);
         AiAnalysis analysis = toAnalysis(event, model);
         analysisMapper.insert(analysis);
         AiRuleDecision rule = ruleService.decide(event, model);
@@ -247,6 +252,10 @@ public class AiGovernanceServiceImpl implements AiGovernanceService {
 
     private Map<String, Object> review(Long incidentId, Integer operator, AiIncidentReviewRequest request, boolean confirm) {
         requireSchema();
+        List<Long> locked = jdbcTemplate.queryForList(
+                "SELECT incident_id FROM governance_incident WHERE incident_id=? FOR UPDATE",
+                Long.class, incidentId);
+        if (locked.isEmpty()) throw new BusinessException("治理事件不存在");
         GovernanceIncident incident = incidentMapper.selectById(incidentId);
         if (incident == null) throw new BusinessException("治理事件不存在");
         if ("CONFIRMED".equals(incident.getState()) || "REJECTED".equals(incident.getState())) throw new BusinessException("该事件已完成审核");
@@ -271,7 +280,9 @@ public class AiGovernanceServiceImpl implements AiGovernanceService {
                 violationService.reportViolation(violation);
                 incident.setViolationId(violation.getIllegalId());
             }
-            notificationService.sendPersonalNotification(incident.getTitle(), incident.getSummary(), incident.getUserId());
+            if (violationTypeId == null) {
+                notificationService.sendPersonalNotification(incident.getTitle(), incident.getSummary(), incident.getUserId());
+            }
             incident.setState("CONFIRMED"); event.setStatus("CONFIRMED");
         } else { incident.setState("REJECTED"); event.setStatus("REJECTED"); }
         incident.setReviewerId(operator); incident.setReviewRemark(trimToNull(remark)); incident.setReviewedAt(LocalDateTime.now()); incident.setUpdateTime(LocalDateTime.now()); incidentMapper.updateById(incident);
@@ -305,12 +316,49 @@ public class AiGovernanceServiceImpl implements AiGovernanceService {
         if (event.getIdentityMethod() == null) event.setIdentityMethod(event.getVehicleId() != null && event.getUserId() != null ? "PAYLOAD" : "UNMATCHED");
     }
 
+    private void applyRecognizedIdentity(AiEvent event, AiModelDecision model) {
+        if (event.getVehicleId() != null && event.getUserId() != null) {
+            return;
+        }
+        if (!model.isPlateVisible() || !StringUtils.hasText(model.getRecognizedPlate())
+                || model.getPlateConfidence() < properties.getIdentityThreshold()) {
+            model.setIdentityReliable(false);
+            return;
+        }
+        String plate = model.getRecognizedPlate().replaceAll("[\\s·•]", "").toUpperCase(Locale.ROOT);
+        if (plate.length() < 5 || plate.length() > 12) {
+            model.setIdentityReliable(false);
+            model.getObservations().add("识别出的车牌格式无效，已转人工复核");
+            return;
+        }
+        event.setLicensePlate(plate);
+        event.setVehicleId(null);
+        event.setUserId(null);
+        event.setIdentityMethod(null);
+        event.setIdentityConfidence(null);
+        bindIdentity(event);
+        if (event.getVehicleId() == null || event.getUserId() == null) {
+            event.setIdentityMethod("VISION_PLATE_UNMATCHED");
+            event.setIdentityConfidence(model.getPlateConfidence());
+            model.setIdentityReliable(false);
+            model.getObservations().add("车牌 " + plate + " 未匹配到已登记车辆，需人工复核");
+        } else {
+            event.setIdentityMethod("AI_VISION_LICENSE_PLATE");
+            event.setIdentityConfidence(model.getPlateConfidence());
+            model.setIdentityReliable(true);
+            model.getObservations().add("车牌 " + plate + " 已匹配车辆及车主档案");
+        }
+        event.setUpdateTime(LocalDateTime.now());
+        eventMapper.updateById(event);
+        saveIdentitySnapshot(event);
+    }
+
     private void saveIdentitySnapshot(AiEvent event) {
         jdbcTemplate.update("INSERT INTO ai_identity_match (event_id, vehicle_id, user_id, match_method, confidence, match_status, explanation) VALUES (?, ?, ?, ?, ?, ?, ?)", event.getEventId(), event.getVehicleId(), event.getUserId(), event.getIdentityMethod(), event.getIdentityConfidence(), event.getVehicleId() != null && event.getUserId() != null ? "MATCHED" : "UNMATCHED", event.getVehicleId() != null && event.getUserId() != null ? "车牌与车辆档案匹配" : "未找到可靠车辆身份");
     }
 
     private AiAnalysis toAnalysis(AiEvent event, AiModelDecision model) {
-        AiAnalysis a = new AiAnalysis(); a.setEventId(event.getEventId()); a.setProvider(model.getProvider()); a.setModelName(model.getModelName()); a.setPromptVersion("governance-v1"); a.setValidEvent(model.isValid()); a.setConfidence(model.getConfidence()); a.setRiskLevel(model.getRiskLevel()); a.setIdentityReliable(model.isIdentityReliable()); a.setEvidenceSufficient(model.isEvidenceSufficient()); a.setSummary(model.getSummary()); a.setRecommendedAction(model.getRecommendedAction()); a.setNotificationText(model.getNotificationText()); a.setObservationsJson(json(model.getObservations())); a.setRawResponse(model.getRawResponse()); a.setLatencyMs(model.getLatencyMs()); a.setInputTokens(model.getInputTokens()); a.setOutputTokens(model.getOutputTokens()); a.setCreateTime(LocalDateTime.now()); return a;
+        AiAnalysis a = new AiAnalysis(); a.setEventId(event.getEventId()); a.setProvider(model.getProvider()); a.setModelName(model.getModelName()); a.setPromptVersion("governance-v1"); a.setValidEvent(model.isValid()); a.setConfidence(model.getConfidence()); a.setRiskLevel(model.getRiskLevel()); a.setIdentityReliable(model.isIdentityReliable()); a.setEvidenceSufficient(model.isEvidenceSufficient()); a.setSummary(model.getSummary()); a.setRecommendedAction(limit(model.getRecommendedAction(), 64)); a.setNotificationText(model.getNotificationText()); a.setObservationsJson(json(model.getObservations())); a.setRawResponse(model.getRawResponse()); a.setLatencyMs(model.getLatencyMs()); a.setInputTokens(model.getInputTokens()); a.setOutputTokens(model.getOutputTokens()); a.setCreateTime(LocalDateTime.now()); return a;
     }
 
     private GovernanceIncident createIncident(AiEvent event, AiModelDecision model, AiRuleDecision rule) {
@@ -346,11 +394,12 @@ public class AiGovernanceServiceImpl implements AiGovernanceService {
     }
     private String statusForDecision(String code) { return "REJECTED".equals(code) ? "REJECTED" : "AUTO_ACCEPTED".equals(code) ? "AUTO_ACCEPTED" : "REVIEW_PENDING"; }
     private String incidentStateForDecision(String code) { return "REJECTED".equals(code) ? "REJECTED" : "AUTO_ACCEPTED".equals(code) ? "PENDING_CONFIRMATION" : "PENDING_REVIEW"; }
-    private String displayType(String type) { return switch (type) { case "ILLEGAL_PARKING" -> "违规停车"; case "OVERLOAD" -> "违规载人"; case "RESTRICTED_AREA" -> "禁区通行"; case "THEFT_RISK" -> "异常移动"; default -> "未佩戴头盔"; }; }
+    private String displayType(String type) { return switch (type) { case "ILLEGAL_PARKING" -> "违规停车"; case "OVERLOAD" -> "违规载人"; case "RESTRICTED_AREA" -> "禁区通行"; case "THEFT_RISK" -> "异常移动"; case "SMOKE_DETECTED" -> "烟雾风险"; case "FIRE_DETECTED" -> "明火风险"; default -> "未佩戴头盔"; }; }
     private void requireSchema() { if (!schema.ensureTablesExist()) throw new BusinessException("AI治理数据表未就绪，请检查数据库连接"); }
     private Object scalar(String sql) { return jdbcTemplate.queryForObject(sql, Object.class); }
     private String json(Object value) { try { return objectMapper.writeValueAsString(value); } catch (Exception ex) { return "{}"; } }
     private String digest(String text) { try { byte[] hash = MessageDigest.getInstance("SHA-256").digest(text.getBytes(StandardCharsets.UTF_8)); StringBuilder b = new StringBuilder(); for (byte x : hash) b.append(String.format("%02x", x)); return b.toString(); } catch (Exception ex) { return UUID.randomUUID().toString(); } }
     private String safeError(Exception ex) { String message = ex.getMessage(); if (!StringUtils.hasText(message)) return ex.getClass().getSimpleName(); return message.length() > 400 ? message.substring(0, 400) : message; }
+    private String limit(String value, int maxLength) { return value == null || value.length() <= maxLength ? value : value.substring(0, maxLength); }
     private String trimToNull(String value) { return StringUtils.hasText(value) ? value.trim() : null; }
 }

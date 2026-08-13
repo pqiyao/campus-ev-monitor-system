@@ -15,7 +15,7 @@ const alias: Record<string, string> = {
 export default ({ command }: ConfigEnv): UserConfigExport => {
   const prodMock = true;
   return {
-    base: './',
+    base: command === 'serve' ? '/' : './',
     resolve: {
       alias
     },
@@ -34,6 +34,24 @@ export default ({ command }: ConfigEnv): UserConfigExport => {
           // 如果您的前端路径和后端路径完全一致，不需要重写
           // rewrite: (path) => path
         },
+        '/hardware-detection-1': {
+          target: 'http://192.168.1.101:8092',
+          changeOrigin: true,
+          rewrite: (path) => path.replace(/^\/hardware-detection-1/, '')
+        },
+        '/hardware-detection-2': {
+          target: 'http://192.168.1.101:8093',
+          changeOrigin: true,
+          rewrite: (path) => path.replace(/^\/hardware-detection-2/, '')
+        },
+        '/hardware-detection-3': {
+          target: 'http://192.168.1.101:8094',
+          changeOrigin: true,
+          rewrite: (path) => path.replace(/^\/hardware-detection-3/, '')
+        },
+        '/hardware-video-1': { target: 'http://192.168.1.101:8081', changeOrigin: true, rewrite: (path) => path.replace(/^\/hardware-video-1/, '') },
+        '/hardware-video-2': { target: 'http://192.168.1.101:8082', changeOrigin: true, rewrite: (path) => path.replace(/^\/hardware-video-2/, '') },
+        '/hardware-video-3': { target: 'http://192.168.1.101:8083', changeOrigin: true, rewrite: (path) => path.replace(/^\/hardware-video-3/, '') },
         // 可以配置多个代理规则
         // '/dev-api': {
         //   target: 'https://www.fastmock.site/mock/xxx/',
@@ -52,6 +70,15 @@ export default ({ command }: ConfigEnv): UserConfigExport => {
       }
     },
     plugins: [
+      {
+        name: 'dev-root-index-fallback',
+        configureServer(server) {
+          server.middlewares.use((request, _response, next) => {
+            if (request.url === '/') request.url = '/index.html'
+            next()
+          })
+        }
+      },
       vue(),
       viteMockServe({
         mockPath: 'mock',

@@ -7,6 +7,8 @@ import com.example.evmonitorplatform.entity.GeoFenceAlert;
 import com.example.evmonitorplatform.mapper.GeoFenceAlertMapper;
 import com.example.evmonitorplatform.mapper.GeoFenceMapper;
 import com.example.evmonitorplatform.service.GeoFenceService;
+import com.example.evmonitorplatform.service.AiGovernanceService;
+import com.example.evmonitorplatform.vo.request.AiEventCreateRequest;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
@@ -27,6 +29,7 @@ public class GeoFenceServiceImpl extends ServiceImpl<GeoFenceMapper, GeoFence>
     private final GeoFenceMapper       fenceMapper;
     private final GeoFenceAlertMapper  alertMapper;
     private final SimpMessagingTemplate messagingTemplate;
+    private final AiGovernanceService aiGovernanceService;
     private final ObjectMapper         objectMapper;
 
     /**
@@ -113,12 +116,13 @@ public class GeoFenceServiceImpl extends ServiceImpl<GeoFenceMapper, GeoFence>
             if (!previousIn.contains(fenceId)) {
                 GeoFence fence = fences.stream()
                         .filter(f -> f.getFenceId().equals(fenceId)).findFirst().orElse(null);
-                if (fence != null && fence.getFenceType() != 2) { // 禁止驶出不处理入围
+                if (fence != null && Integer.valueOf(1).equals(fence.getFenceType())) {
                     GeoFenceAlert alert = buildAlert(fence, vehicleId, licensePlate,
                             userId, userName, lng, lat, "enter");
                     alertMapper.insert(alert);
                     triggered.add(alert);
                     pushAlertWs(alert, fence);
+                    recordRestrictedAreaEvent(alert, fence);
                 }
             }
         }
@@ -134,6 +138,7 @@ public class GeoFenceServiceImpl extends ServiceImpl<GeoFenceMapper, GeoFence>
                     alertMapper.insert(alert);
                     triggered.add(alert);
                     pushAlertWs(alert, fence);
+                    recordRestrictedAreaEvent(alert, fence);
                 }
             }
         }
@@ -279,6 +284,34 @@ public class GeoFenceServiceImpl extends ServiceImpl<GeoFenceMapper, GeoFence>
             messagingTemplate.convertAndSend("/topic/fence-alert", payload);
         } catch (Exception e) {
             log.warn("围栏预警 WebSocket 推送失败", e);
+        }
+    }
+
+    private void recordRestrictedAreaEvent(GeoFenceAlert alert, GeoFence fence) {
+        try {
+            AiEventCreateRequest request = new AiEventCreateRequest();
+            request.setEventType("RESTRICTED_AREA");
+            request.setSourceType("GEOFENCE");
+            request.setDeviceId("geofence-" + fence.getFenceId());
+            request.setOccurredAt(alert.getCreateTime());
+            request.setLocationName(fence.getFenceName());
+            request.setLongitude(alert.getTriggerLng());
+            request.setLatitude(alert.getTriggerLat());
+            request.setLicensePlate(alert.getLicensePlate());
+            request.setVehicleId(alert.getVehicleId());
+            request.setUserId(alert.getUserId());
+            request.setDetectionConfidence(1.0D);
+            request.setEvidenceUrls(List.of());
+            request.setRawPayload(Map.of(
+                    "alertId", alert.getAlertId(),
+                    "fenceId", fence.getFenceId(),
+                    "fenceType", fence.getFenceType(),
+                    "alertType", alert.getAlertType()));
+            request.setIdempotencyKey("geofence-alert-" + alert.getAlertId());
+            request.setAutoAnalyze(false);
+            aiGovernanceService.ingest(request);
+        } catch (Exception ex) {
+            log.warn("围栏预警写入AI治理事件失败 alertId={}: {}", alert.getAlertId(), ex.getMessage());
         }
     }
 

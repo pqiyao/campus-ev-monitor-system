@@ -47,6 +47,8 @@ class Gpt56AiModelGatewayTest {
         assertEquals("gpt-5.6", requestBody.get().path("model").asText());
         assertTrue(requestBody.get().toString().contains("input_image"));
         assertEquals(0.96D, decision.getConfidence());
+        assertEquals("湘A12345", decision.getRecognizedPlate());
+        assertEquals(0.97D, decision.getPlateConfidence());
         assertEquals(123, decision.getInputTokens());
         assertEquals("openai-compatible", decision.getProvider());
     }
@@ -110,6 +112,9 @@ class Gpt56AiModelGatewayTest {
                 Map.entry("riskLevel", risk),
                 Map.entry("identityReliable", identityReliable),
                 Map.entry("evidenceSufficient", true),
+                Map.entry("plateVisible", true),
+                Map.entry("recognizedPlate", "湘A12345"),
+                Map.entry("plateConfidence", 0.97D),
                 Map.entry("summary", "需要复核"),
                 Map.entry("recommendedAction", "CREATE_REVIEW_TASK"),
                 Map.entry("notificationText", "请关注"),

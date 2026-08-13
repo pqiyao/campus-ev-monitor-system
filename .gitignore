@@ -35,6 +35,7 @@ __pycache__/
 *.db
 *.sqlite
 *.sqlite3
+tmp/
 
 # Large archives and media (keep source code and documentation in Git)
 *.zip

@@ -4,12 +4,12 @@
     <div class="page-header">
       <div class="header-bg">
         <div class="header-left">
-          <h1 class="title-text">⚙️ 系统配置中心</h1>
-          <p class="title-sub">统一管理违规类型、电子围栏、系统阈值和通知模板</p>
+          <h1 class="title-text">系统配置</h1>
+          <p class="title-sub">规则、围栏与通知策略</p>
         </div>
         <div class="header-actions">
           <el-button class="action-btn" @click="refreshAll" :icon="Refresh">刷新</el-button>
-          <el-button type="primary" class="action-btn primary" @click="saveAll" :icon="Check">保存所有</el-button>
+          <el-button type="primary" class="action-btn primary" @click="saveAll" :icon="Check">保存</el-button>
         </div>
       </div>
     </div>
@@ -18,14 +18,14 @@
     <el-tabs v-model="activeConfigTab" class="config-tabs">
       <el-tab-pane label="违规类型" name="violation">
         <template #label>
-          <span><span class="tab-icon">⚠️</span> 违规类型</span>
+          <span>违规类型</span>
         </template>
         <div class="tab-content">
           <div class="pane-header">
             <span class="pane-title">违规类型配置</span>
             <el-button type="primary" size="small" @click="addViolationType">+ 新增类型</el-button>
           </div>
-          <el-table :data="violationTypes" stripe style="width: 100%" class="config-table">
+          <el-table :data="violationTypes" style="width: 100%" class="config-table">
             <el-table-column prop="typeId" label="ID" width="80" align="center" />
             <el-table-column label="类型名称">
               <template #default="{ row }">
@@ -64,16 +64,19 @@
 
       <el-tab-pane label="电子围栏" name="fence" lazy>
         <template #label>
-          <span><span class="tab-icon">🗺️</span> 电子围栏</span>
+          <span>电子围栏</span>
         </template>
         <div class="tab-content fence-content">
           <div class="pane-header">
-            <span class="pane-title">围栏管理</span>
+            <div>
+              <span class="pane-title">电子围栏</span>
+              <span class="pane-kicker">{{ ACTIVE_CAMPUS.name }}</span>
+            </div>
             <div class="pane-actions">
-              <el-button size="small" @click="refreshFenceData" :icon="Refresh">刷新围栏数据</el-button>
-              <el-button type="primary" size="small" @click="startDrawFence" :icon="Plus">绘制围栏</el-button>
-              <el-button type="warning" size="small" @click="completeFenceDrawing">结束绘制</el-button>
-              <el-button type="success" size="small" @click="createNewFence">新建围栏</el-button>
+              <el-button size="small" @click="refreshFenceData" :icon="Refresh">刷新</el-button>
+              <el-button size="small" @click="createNewFence" :icon="Plus">手动新建</el-button>
+              <el-button type="primary" size="small" @click="startDrawFence">地图绘制</el-button>
+              <el-button type="warning" size="small" @click="completeFenceDrawing">完成绘制</el-button>
             </div>
           </div>
 
@@ -124,7 +127,6 @@
               v-if="fenceAlerts.length"
               :data="fenceAlerts"
               size="small"
-              stripe
               class="fence-alerts-table"
               max-height="280"
             >
@@ -173,7 +175,11 @@
 
           <div class="fence-layout">
             <!-- 左侧围栏列表 -->
-            <div class="fence-list">
+            <aside class="fence-list">
+              <div class="fence-list-head">
+                <span>围栏目录</span>
+                <b>{{ fenceList.length }}</b>
+              </div>
               <el-card v-for="fence in fenceList" :key="fence.fenceId" class="fence-card" :body-style="{ padding: '12px' }">
                 <div class="fence-item" :style="{ borderLeftColor: fence.fenceColor }">
                   <div class="fence-header">
@@ -200,9 +206,15 @@
                 description="暂无围栏，点击绘制围栏创建"
                 :image-size="100"
               />
-            </div>
+            </aside>
             <!-- 右侧地图绘制区 -->
-            <div class="fence-map" id="fence_map"></div>
+            <div class="fence-map-shell">
+              <div class="map-caption">
+                <span>空间范围</span>
+                <small>点击“地图绘制”后依次标记边界点</small>
+              </div>
+              <div class="fence-map" id="fence_map"></div>
+            </div>
           </div>
         </div>
       </el-tab-pane>
@@ -341,6 +353,7 @@ import { ElMessage, ElMessageBox, ElTabs, ElTabPane } from 'element-plus'
 import { Refresh, Check, Plus } from '@element-plus/icons-vue'
 import axios from 'axios'
 import request from '@/utils/system/request'
+import { ACTIVE_CAMPUS } from '@/config/campusMap'
 import {
   getGeofenceList,
   getGeofenceEnabled,
@@ -370,7 +383,9 @@ let currentPolygon = null
 let isFenceManualDrawing = false
 let fenceDrawingPoints = []
 let fenceDrawingTempPolyline = null
-const FENCE_MAP_CENTER = { lng: 112.6827629, lat: 26.8860959 }
+let fenceMapResizeObserver = null
+let fenceMapResizeTimer = null
+const FENCE_MAP_CENTER = { lng: ACTIVE_CAMPUS.lng, lat: ACTIVE_CAMPUS.lat }
 const FENCE_MAP_ZOOM = 18
 const FENCE_MAP_STYLE = [
   { featureType: 'all', elementType: 'labels', stylers: { visibility: 'off' } },
@@ -675,13 +690,36 @@ const ensureBMapGLLibDrawing = () => {
 const getPolygonDrawingType = () =>
   typeof window.BMAP_DRAWING_POLYGON !== 'undefined' ? window.BMAP_DRAWING_POLYGON : 5
 
+const applyFenceMapCenter = () => {
+  if (!map || typeof BMapGL === 'undefined') return
+  map.centerAndZoom(new BMapGL.Point(FENCE_MAP_CENTER.lng, FENCE_MAP_CENTER.lat), FENCE_MAP_ZOOM)
+  map.setHeading?.(0)
+}
+
 const resizeFenceMap = () => {
-  if (!map || typeof map.resize !== 'function') return
+  if (!map) return
   try {
-    map.resize()
+    const center = map.getCenter?.()
+    const zoom = map.getZoom?.()
+    if (typeof map.checkResize === 'function') map.checkResize()
+    else if (typeof map.resize === 'function') map.resize()
+    if (center && Number.isFinite(zoom)) map.centerAndZoom(center, zoom)
   } catch (e) {
     console.warn('fence map resize', e)
   }
+}
+
+const observeFenceMapSize = () => {
+  fenceMapResizeObserver?.disconnect?.()
+  const container = document.getElementById('fence_map')
+  if (!container || typeof ResizeObserver === 'undefined') return
+  fenceMapResizeObserver = new ResizeObserver(() => {
+    if (fenceMapResizeTimer) clearTimeout(fenceMapResizeTimer)
+    fenceMapResizeTimer = setTimeout(() => {
+      resizeFenceMap()
+    }, 60)
+  })
+  fenceMapResizeObserver.observe(container)
 }
 
 const hideFenceMapLabels = () => {
@@ -719,6 +757,7 @@ const initFenceMap = () => {
 
     if (map) {
       nextTick(() => {
+        observeFenceMapSize()
         hideFenceMapLabels()
         resizeFenceMap()
         drawAllFences()
@@ -727,8 +766,8 @@ const initFenceMap = () => {
     }
 
     map = new BMapGL.Map(container)
-    const point = new BMapGL.Point(FENCE_MAP_CENTER.lng, FENCE_MAP_CENTER.lat)
-    map.centerAndZoom(point, FENCE_MAP_ZOOM)
+    observeFenceMapSize()
+    applyFenceMapCenter()
     map.setMinZoom?.(15)
     map.setMaxZoom?.(20)
     map.enableScrollWheelZoom()
@@ -1127,6 +1166,7 @@ watch(activeConfigTab, (name) => {
     initFenceMap()
     setTimeout(() => {
       resizeFenceMap()
+      applyFenceMapCenter()
       drawAllFences()
     }, 150)
   })
@@ -1139,6 +1179,10 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  fenceMapResizeObserver?.disconnect?.()
+  fenceMapResizeObserver = null
+  if (fenceMapResizeTimer) clearTimeout(fenceMapResizeTimer)
+  fenceMapResizeTimer = null
   try {
     drawingManager?.close?.()
   } catch (e) {
@@ -1153,31 +1197,32 @@ onUnmounted(() => {
 <style scoped>
 .system-config-container {
   min-height: 100vh;
-  background: linear-gradient(135deg, #0a0e29 0%, #1a1f3c 100%);
-  color: #fff;
-  padding: 20px;
+  background: rgba(2, 12, 25, .93);
+  color: #e6edf6;
+  padding: 18px 20px 28px;
 }
 .page-header .header-bg {
-  background: rgba(255,255,255,0.05);
-  border-radius: 16px;
-  padding: 20px 24px;
-  border: 1px solid rgba(0,123,255,0.2);
+  background: rgba(8, 24, 42, .9);
+  border-radius: 6px;
+  padding: 16px 20px;
+  border: 1px solid rgba(111, 148, 181, .22);
+  border-left: 3px solid #28b8d5;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  backdrop-filter: blur(10px);
 }
 .title-text {
-  font-size: 24px;
+  font-family: 'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif;
+  font-size: 20px;
   font-weight: 600;
   margin: 0;
-  color: #e8f4ff;
-  letter-spacing: 0.02em;
-  text-shadow: 0 0 28px rgba(0, 212, 255, 0.35);
+  color: #f2f7fb;
+  letter-spacing: 0;
+  text-shadow: none;
 }
 .title-sub {
   font-size: 14px;
-  color: rgba(200, 230, 255, 0.82);
+  color: #849db4;
   margin-top: 5px;
 }
 .header-actions {
@@ -1185,9 +1230,9 @@ onUnmounted(() => {
   gap: 10px;
 }
 .action-btn {
-  padding: 10px 20px;
-  border-radius: 8px;
-  font-size: 14px;
+  padding: 8px 14px;
+  border-radius: 4px;
+  font-size: 13px;
   transition: all 0.3s;
 }
 /* 顶栏「刷新」等默认按钮：深色底 + 亮字，避免浅底看不清 */
@@ -1200,45 +1245,46 @@ onUnmounted(() => {
   --el-button-hover-text-color: #e8f8ff;
 }
 .action-btn.primary {
-  background: linear-gradient(90deg, #007bff, #6610f2);
+  background: #1687a7;
   border: none;
   color: #fff;
 }
 .action-btn.primary:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(0,123,255,0.4);
+  background: #1da0c4;
+  box-shadow: 0 4px 12px rgba(22, 135, 167, .3);
 }
 
 .config-tabs {
-  margin-top: 20px;
+  margin-top: 14px;
   background: transparent;
 }
 :deep(.el-tabs__nav-wrap::after) {
-  background-color: rgba(0,212,255,0.3);
+  height: 1px;
+  background-color: rgba(111, 148, 181, .22);
 }
 :deep(.el-tabs__item) {
-  color: rgba(200, 225, 255, 0.88);
-  font-size: 15px;
+  color: #8ba2b8;
+  font-size: 14px;
   padding: 0 20px;
 }
 :deep(.el-tabs__item.is-active) {
-  color: #00d4ff;
-  font-weight: 500;
+  color: #55cee5;
+  font-weight: 600;
 }
 :deep(.el-tabs__active-bar) {
-  background: #00d4ff;
-  height: 3px;
+  background: #31b6cf;
+  height: 2px;
 }
 .tab-icon {
   margin-right: 6px;
   font-size: 16px;
 }
 .tab-content {
-  background: rgba(255,255,255,0.03);
-  border-radius: 12px;
-  padding: 20px;
-  border: 1px solid rgba(255,255,255,0.08);
-  margin-top: 10px;
+  background: rgba(7, 22, 39, .88);
+  border-radius: 6px;
+  padding: 18px;
+  border: 1px solid rgba(111, 148, 181, .2);
+  margin-top: 8px;
 }
 .pane-header {
   display: flex;
@@ -1247,12 +1293,14 @@ onUnmounted(() => {
   margin-bottom: 20px;
 }
 .pane-title {
-  font-size: 18px;
-  font-weight: 500;
-  color: #5ce1ff;
-  letter-spacing: 0.5px;
-  text-shadow: 0 0 18px rgba(0, 212, 255, 0.25);
+  display: block;
+  font-size: 16px;
+  font-weight: 600;
+  color: #dce9f3;
+  letter-spacing: 0;
+  text-shadow: none;
 }
+.pane-kicker { display: block; margin-top: 4px; color: #6f8da7; font-size: 12px; }
 .pane-title.sub {
   font-size: 16px;
   margin-bottom: 0;
@@ -1265,19 +1313,23 @@ onUnmounted(() => {
 .fence-stats {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  gap: 12px;
-  margin-bottom: 16px;
+  gap: 1px;
+  margin-bottom: 14px;
+  overflow: hidden;
+  border: 1px solid rgba(111, 148, 181, .2);
+  border-radius: 5px;
 }
 .stat-card {
-  background: rgba(0, 0, 0, 0.25);
-  border: 1px solid rgba(0, 212, 255, 0.2);
-  border-radius: 10px;
-  padding: 14px 16px;
-  text-align: center;
+  background: rgba(12, 32, 52, .88);
+  border: 0;
+  border-right: 1px solid rgba(111, 148, 181, .18);
+  border-radius: 0;
+  padding: 12px 16px;
+  text-align: left;
 }
 .stat-val {
   display: block;
-  font-size: 22px;
+  font-size: 20px;
   font-weight: 700;
   color: #e8f4ff;
 }
@@ -1293,15 +1345,15 @@ onUnmounted(() => {
 .stat-label {
   display: block;
   font-size: 12px;
-  color: rgba(200, 220, 255, 0.55);
-  margin-top: 6px;
+  color: #718ba2;
+  margin-top: 3px;
 }
 .fence-enabled-bar {
   margin-bottom: 16px;
   padding: 12px 14px;
-  background: rgba(16, 185, 129, 0.08);
-  border: 1px solid rgba(16, 185, 129, 0.25);
-  border-radius: 10px;
+  background: rgba(13, 54, 52, .45);
+  border: 1px solid rgba(53, 174, 143, .25);
+  border-radius: 5px;
 }
 .fence-enabled-label {
   display: block;
@@ -1319,7 +1371,11 @@ onUnmounted(() => {
   color: #a7f3d0 !important;
 }
 .fence-alerts-wrap {
-  margin-bottom: 18px;
+  margin-bottom: 16px;
+  padding: 14px;
+  background: rgba(5, 17, 31, .62);
+  border: 1px solid rgba(111, 148, 181, .16);
+  border-radius: 5px;
 }
 .fence-alerts-head {
   display: flex;
@@ -1357,18 +1413,23 @@ onUnmounted(() => {
   color: #fff;
 }
 :deep(.el-table) {
-  --el-table-bg-color: transparent;
-  --el-table-tr-bg-color: transparent;
-  --el-table-header-bg-color: rgba(0,0,0,0.3);
-  --el-table-row-hover-bg-color: rgba(0,212,255,0.1);
-  --el-table-border-color: rgba(255,255,255,0.1);
-  --el-table-text-color: #fff;
+  --el-table-bg-color: #0a2035;
+  --el-table-tr-bg-color: #0a2035;
+  --el-table-header-bg-color: #102c45;
+  --el-table-row-hover-bg-color: #12344e;
+  --el-table-border-color: rgba(117, 151, 180, .18);
+  --el-table-text-color: #d9e5ef;
+  --el-table-header-text-color: #8fc4d4;
 }
+:deep(.el-table__body tr:nth-child(even) > td.el-table__cell),
+:deep(.el-table__body tr:nth-child(odd) > td.el-table__cell) { background: #0a2035 !important; }
+:deep(.el-table__body tr:hover > td.el-table__cell) { background: #12344e !important; }
+:deep(.el-table__fixed-right), :deep(.el-table__fixed) { background: #0a2035; }
 :deep(.el-table th) {
-  color: #7ee8ff;
-  font-weight: 500;
-  background: rgba(0,0,0,0.3);
-  border-bottom: 1px solid rgba(0,212,255,0.3);
+  color: #8fc4d4;
+  font-weight: 600;
+  background: #102c45;
+  border-bottom: 1px solid rgba(117, 151, 180, .22);
 }
 :deep(.el-table td) {
   border-bottom: 1px solid rgba(255,255,255,0.05);
@@ -1377,8 +1438,8 @@ onUnmounted(() => {
   color: #e8f4ff;
 }
 :deep(.el-input__wrapper) {
-  background: rgba(0,0,0,0.3);
-  border: 1px solid rgba(255,255,255,0.2);
+  background: #071a2c;
+  border: 1px solid rgba(121, 156, 184, .28);
   box-shadow: none;
 }
 :deep(.el-input__wrapper.is-focus) {
@@ -1423,31 +1484,35 @@ onUnmounted(() => {
   min-height: 500px;
 }
 .fence-layout {
-  display: flex;
-  gap: 20px;
-  height: 550px;
+  display: grid;
+  grid-template-columns: minmax(280px, 340px) minmax(0, 1fr);
+  gap: 14px;
+  height: 580px;
 }
 .fence-list {
-  width: 340px;
+  width: auto;
   overflow-y: auto;
-  background: rgba(0,0,0,0.2);
-  border-radius: 8px;
-  padding: 8px;
+  background: #071a2c;
+  border: 1px solid rgba(111, 148, 181, .2);
+  border-radius: 5px;
+  padding: 0 10px 10px;
 }
+.fence-list-head { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: space-between; height: 44px; padding: 0 4px; color: #9bb4c9; background: #071a2c; border-bottom: 1px solid rgba(111, 148, 181, .18); font-size: 13px; }
+.fence-list-head b { color: #55cee5; font-size: 12px; }
 .fence-card {
-  margin-bottom: 12px;
-  --el-card-bg-color: rgba(12, 20, 42, 0.92);
-  background: rgba(12, 20, 42, 0.92);
-  border: 1px solid rgba(0, 212, 255, 0.22);
-  border-radius: 8px;
+  margin: 10px 0 0;
+  --el-card-bg-color: #0c253c;
+  background: #0c253c;
+  border: 1px solid rgba(111, 148, 181, .2);
+  border-radius: 5px;
   transition: all 0.3s;
 }
 :deep(.fence-card .el-card__body) {
   color: #e8f4ff;
 }
 .fence-card:hover {
-  border-color: #00d4ff;
-  transform: translateY(-2px);
+  border-color: #31b6cf;
+  transform: translateY(-1px);
 }
 .fence-item {
   padding-left: 12px;
@@ -1499,13 +1564,25 @@ onUnmounted(() => {
 }
 .fence-map {
   flex: 1;
+  width: 100%;
+  max-width: none;
   min-width: 280px;
   min-height: 480px;
   height: 100%;
   background: #001a36;
-  border-radius: 8px;
+  border-radius: 0 0 5px 5px;
   overflow: hidden;
-  border: 1px solid rgba(0,212,255,0.2);
+  border: 0;
+}
+.fence-map-shell { min-width: 0; display: flex; flex-direction: column; overflow: hidden; background: #071a2c; border: 1px solid rgba(111, 148, 181, .2); border-radius: 5px; }
+.map-caption { display: flex; align-items: center; justify-content: space-between; min-height: 44px; padding: 0 14px; border-bottom: 1px solid rgba(111, 148, 181, .18); }
+.map-caption span { color: #b8cbd9; font-size: 13px; font-weight: 600; }
+.map-caption small { color: #68839a; font-size: 11px; }
+
+@media (max-width: 1050px) {
+  .fence-layout { grid-template-columns: 1fr; height: auto; }
+  .fence-list { max-height: 360px; }
+  .fence-map-shell { min-height: 520px; }
 }
 
 /* 阈值配置 */

@@ -18,6 +18,7 @@ def resource_path(*parts):
 save_path = resource_path("save_data")
 video_test_file = resource_path("TestFiles", "video.mp4")
 model_path = resource_path("models", "best.pt")
+fire_smoke_model_path = resource_path("models", "fire_smoke_best.pt")
 
 names = {0: "helmet", 1: "without", 2: "two_wheeler"}
 CH_names = ["头盔", "未佩戴", "非机动车"]

@@ -176,20 +176,6 @@ SET @f_south = (SELECT fence_id FROM geofence WHERE fence_name = '南门停车�
 SET @f_east  = (SELECT fence_id FROM geofence WHERE fence_name = '东侧停车场' AND deleted = 0 ORDER BY fence_id DESC LIMIT 1);
 SET @f_north = (SELECT fence_id FROM geofence WHERE fence_name = '北区停车场' AND deleted = 0 ORDER BY fence_id DESC LIMIT 1);
 
-INSERT INTO geofence_alert
-(fence_id, fence_name, vehicle_id, license_plate, user_id, user_name, alert_type, trigger_lng, trigger_lat, alert_level, is_processed, create_time)
-VALUES
-(@f_south, '南门停车场', @v01, '湘A90001', @u01, '陈思源', 'enter', 112.68182, 26.88520, 3, 0, DATE_SUB(NOW(), INTERVAL 26 MINUTE)),
-(@f_south, '南门停车场', @v02, '湘A90002', @u02, '李雨桐', 'enter', 112.68210, 26.88536, 3, 0, DATE_SUB(NOW(), INTERVAL 24 MINUTE)),
-(@f_south, '南门停车场', @v03, '湘A90003', @u03, '王子涵', 'enter', 112.68238, 26.88552, 3, 0, DATE_SUB(NOW(), INTERVAL 22 MINUTE)),
-(@f_south, '南门停车场', @v04, '湘A90004', @u04, '赵一鸣', 'enter', 112.68266, 26.88570, 3, 0, DATE_SUB(NOW(), INTERVAL 20 MINUTE)),
-(@f_south, '南门停车场', @v05, '湘A90005', @u05, '刘浩然', 'enter', 112.68302, 26.88530, 3, 0, DATE_SUB(NOW(), INTERVAL 18 MINUTE)),
-(@f_south, '南门停车场', @v06, '湘A90006', @u06, '张佳怡', 'enter', 112.68328, 26.88562, 3, 0, DATE_SUB(NOW(), INTERVAL 16 MINUTE)),
-(@f_south, '南门停车场', @v07, '湘A90007', @u07, '周俊杰', 'enter', 112.68158, 26.88576, 3, 0, DATE_SUB(NOW(), INTERVAL 14 MINUTE)),
-(@f_east,  '东侧停车场', @v08, '湘A90008', @u08, '黄梓涵', 'enter', 112.68362, 26.88644, 2, 1, DATE_SUB(NOW(), INTERVAL 11 MINUTE)),
-(@f_east,  '东侧停车场', @v09, '湘A90009', @u09, '吴雨薇', 'enter', 112.68418, 26.88690, 2, 1, DATE_SUB(NOW(), INTERVAL 8 MINUTE)),
-(@f_north, '北区停车场', @v10, '湘A90010', @u10, '彭启耀', 'enter', 112.68218, 26.88742, 2, 1, DATE_SUB(NOW(), INTERVAL 5 MINUTE));
-
 INSERT INTO notification
 (title, content, type, is_urgent, receiver_type, receiver_ids, send_time, read_count, total_count, status, create_time, update_time, deleted)
 VALUES

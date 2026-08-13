@@ -7,7 +7,7 @@
           <p>查询热点与积压、预审申诉、生成报告、维护校规。模型只给参考，不改变处罚或申诉状态。</p>
         </div>
         <div class="intro-actions">
-          <span class="quiet-tag">{{ config.model || '模型未配置' }} · {{ config.mode === 'gpt' ? '在线' : '本地' }}</span>
+            <span class="quiet-tag">AI治理助手 · {{ config.mode === 'gpt' ? '在线分析' : '本地演示' }}</span>
           <el-button :loading="reportLoading" @click="createReport">生成周报</el-button>
           <el-button type="primary" :icon="Refresh" @click="loadReferenceData">刷新</el-button>
         </div>
@@ -40,7 +40,7 @@
             >
               <header>
                 <span>{{ message.role === 'user' ? '管理员' : '助手' }}</span>
-                <small v-if="message.provider">{{ message.provider }} · {{ message.model }}</small>
+                  <small v-if="message.provider">AI治理智能分析</small>
               </header>
               <p>{{ message.content }}</p>
             </article>
@@ -193,7 +193,7 @@
               <span>{{ row.report_code }} · {{ row.report_type }}</span>
             </div>
             <p>{{ row.period_start }} 至 {{ row.period_end }}</p>
-            <small>{{ row.model_name }} · {{ row.create_time }}</small>
+            <small>AI治理分析 · {{ row.create_time }}</small>
           </article>
           <el-empty v-if="!referenceLoading && !reports.length" description="暂无报告" :image-size="72" />
         </div>

@@ -25,10 +25,12 @@
             </span>
           </div>
           <div class="boxLeftVideoBoxCon">
-            <video autoplay width="100%" height="100%" ref="camera1" poster="/img/camera-placeholder.jpg">
-              <source src="/webm/CAMERAV.webm" type="video/mp4">
-              您的浏览器不支持视频播放
-            </video>
+            <img
+              ref="camera1"
+              class="live-stream"
+              :src="liveStreamUrls[0]"
+              alt=""
+            />
           </div>
           <div class="clear"></div>
           <div class="BoxConTop">
@@ -38,10 +40,12 @@
             </span>
           </div>
           <div class="boxLeftVideoBoxCon">
-            <video autoplay width="100%" height="100%" ref="camera2" poster="/img/camera-placeholder.jpg">
-              <source src="/webm/CAMERAV.webm" type="video/mp4">
-              您的浏览器不支持视频播放
-            </video>
+            <img
+              ref="camera2"
+              class="live-stream"
+              :src="liveStreamUrls[1]"
+              alt=""
+            />
           </div>
         </div>
         <div class="clear"></div>
@@ -666,8 +670,20 @@ import { ElDialog, ElButton, ElMessage, ElMessageBox } from 'element-plus'
 import axios from 'axios'
 import * as echarts from 'echarts'
 import { getApiBaseUrl } from '@/utils/apiBase'
+import { HARDWARE_CAMERAS } from '@/config/hardwareCameras'
+import {
+  ACTIVE_CAMPUS,
+  ACTIVE_CAMPUS_KEY,
+  normalizeCampusPoint
+} from '@/config/campusMap'
 
 const API_BASE_URL = getApiBaseUrl()
+const liveStreamUrls = HARDWARE_CAMERAS.slice(0, 2).map(camera => camera.videoUrl)
+const camera1 = ref(null)
+const camera2 = ref(null)
+
+// 兼容旧的路线/围栏坐标转换调用，统一复用当前校区配置。
+const translateCampusPoint = (point) => normalizeCampusPoint(point)
 
 const readTokenFromStorage = () => {
   const direct = localStorage.getItem('token') || sessionStorage.getItem('token')
@@ -728,9 +744,10 @@ const heatmapModes = [
   { value: 'strong', label: '标准' },
   { value: 'dense', label: '聚集' }
 ]
-const DEMO_POINT_CACHE_KEY = 'ev_monitor_demo_points_v1'
-const DEMO_POINT_BASE_LNG = 112.6827629
-const DEMO_POINT_BASE_LAT = 26.8860959
+//==================================================================================================================
+const DEMO_POINT_CACHE_KEY = `ev_monitor_demo_points_${ACTIVE_CAMPUS_KEY}_v1`
+const DEMO_POINT_BASE_LNG = ACTIVE_CAMPUS.lng
+const DEMO_POINT_BASE_LAT = ACTIVE_CAMPUS.lat
 const buildLegacyDemoPointDefault = (index) => {
   const col = index % 5
   const row = Math.floor(index / 5)
@@ -841,7 +858,7 @@ let simMotionTick = 0
 const LOCATION_POLL_MS = 5000
 const SIM_PUSH_MS = 5000
 
-const LOCATION_CACHE_KEY = 'ev_monitor_vehicle_location_cache_v1'
+const LOCATION_CACHE_KEY = `ev_monitor_vehicle_location_cache_${ACTIVE_CAMPUS_KEY}_v1`
 const STALE_CLEAR_MINUTES = 120
 
 const loadLocationCache = () => {
@@ -1546,6 +1563,7 @@ const mergeVoIntoLocationCache = (vo) => {
   const id = locationMapKey(vo)
   if (!id || vo.lat == null || vo.lng == null) return
   const prev = locationCache[id] || {}
+  const campusPoint = normalizeCampusPoint({ lng: vo.lng, lat: vo.lat })
   locationCache[id] = {
     ...prev,
     licensePlate: vo.licensePlate,
@@ -1554,8 +1572,8 @@ const mergeVoIntoLocationCache = (vo) => {
     ownerName: vo.ownerName,
     userName: vo.userName,
     unbound: vo.unbound,
-    lng: Number(vo.lng),
-    lat: Number(vo.lat),
+    lng: campusPoint.lng,
+    lat: campusPoint.lat,
     speed: vo.speed,
     battery: vo.battery,
     updateTime:
@@ -1863,7 +1881,7 @@ const parseFenceCoordinates = (coordinates) => {
     const arr = typeof coordinates === 'string' ? JSON.parse(coordinates) : coordinates
     if (!Array.isArray(arr)) return []
     return arr
-      .map((p) => ({ lng: Number(p?.lng), lat: Number(p?.lat) }))
+      .map(normalizeCampusPoint)
       .filter((p) => Number.isFinite(p.lng) && Number.isFinite(p.lat))
   } catch (e) {
     return []
@@ -1892,9 +1910,11 @@ const drawGeofencePolygons = () => {
 const updateMapMarkers = (mapData) => {
   if (!map || !mapData) return
   clearMapDataOverlays()
-  if (mapData.markers && mapData.markers.length > 0) {
+    if (mapData.markers && mapData.markers.length > 0) {
     mapData.markers.forEach(marker => {
-      const point = new BMapGL.Point(marker.lng, marker.lat)
+      const campusPoint = normalizeCampusPoint(marker)
+      if (!Number.isFinite(campusPoint.lng) || !Number.isFinite(campusPoint.lat)) return
+      const point = new BMapGL.Point(campusPoint.lng, campusPoint.lat)
       let icon = null
       if (marker.type === 'camera') icon = new BMapGL.Icon('/img/camera_marker.png', new BMapGL.Size(32, 32))
       else if (marker.type === 'violation') icon = new BMapGL.Icon('/img/violation_marker.png', new BMapGL.Size(32, 32))
@@ -2149,7 +2169,7 @@ const initMap = () => {
     }
     mapContainerEl = mapContainer
     map = new BMapGL.Map("map_box", { minZoom: 15, maxZoom: 20, enableAutoResize: true })
-    const point = new BMapGL.Point(112.6827629, 26.8860959)
+    const point = new BMapGL.Point(DEMO_POINT_BASE_LNG, DEMO_POINT_BASE_LAT)
     map.centerAndZoom(point, 18)
     try {
       map.setMapType(BMAP_NORMAL_MAP)
@@ -2220,7 +2240,7 @@ const tiltDown  = () => { if (map) map.setTilt(Math.max(map.getTilt() - 10, 45))
 const rotateLeft  = () => { if (map) map.setHeading(map.getHeading() - 15) }
 const rotateRight = () => { if (map) map.setHeading(map.getHeading() + 15) }
 const resetView = () => {
-  if (map) { keep3DMapView(); map.setHeading(0); map.setZoom(18); map.panTo(new BMapGL.Point(112.6827629, 26.8860959)) }
+  if (map) { keep3DMapView(); map.setHeading(0); map.setZoom(18); map.panTo(new BMapGL.Point(DEMO_POINT_BASE_LNG, DEMO_POINT_BASE_LAT)) }
 }
 
 // ---------- 辅助方法 ----------
@@ -2252,8 +2272,8 @@ const locateVehicleOnMap = (vehicle) => {
   if (!map) return
   const plate = vehicle?.licensePlate ? String(vehicle.licensePlate).trim() : ''
   const cached = plate ? locationCache[plate] : null
-  const lng = cached?.lng != null ? Number(cached.lng) : 112.6827629
-  const lat = cached?.lat != null ? Number(cached.lat) : 26.8860959
+  const lng = cached?.lng != null ? Number(cached.lng) : DEMO_POINT_BASE_LNG
+  const lat = cached?.lat != null ? Number(cached.lat) : DEMO_POINT_BASE_LAT
   const point = new BMapGL.Point(lng, lat)
   map.centerAndZoom(point, 19)
   keep3DMapView()
@@ -2289,9 +2309,9 @@ const showVehicleDetail = (vehicle) => {
 }
 
 const toggleFullscreen = (cameraId) => {
-  const video = document.querySelector(`video[ref="${cameraId}"]`)
-  if (!video) return
-  if (!document.fullscreenElement) video.requestFullscreen?.()
+  const el = cameraId === 'camera2' ? camera2.value : camera1.value
+  if (!el) return
+  if (!document.fullscreenElement) el.requestFullscreen?.()
   else document.exitFullscreen?.()
 }
 
@@ -2341,10 +2361,10 @@ const parkingRuntimeConfig = reactive({ stationaryMinutes: 150, moveThresholdMet
 const zones = ref([])
 const showExtra = ref(true)
 const simActionLoading = ref(false)
-const PARKING_GUIDE_CACHE_KEY = 'ev_monitor_parking_guide_config_v1'
-const PARKING_GUIDE_NOTIFY_CACHE_KEY = 'ev_monitor_parking_guide_notify_v1'
+const PARKING_GUIDE_CACHE_KEY = `ev_monitor_parking_guide_config_${ACTIVE_CAMPUS_KEY}_v1`
+const PARKING_GUIDE_NOTIFY_CACHE_KEY = `ev_monitor_parking_guide_notify_${ACTIVE_CAMPUS_KEY}_v1`
 const PARKING_GUIDE_AUTO_NOTIFY_MS = 10 * 60 * 1000
-const TRACK_ROUTE_CACHE_KEY = 'ev_monitor_track_route_config_v2'
+const TRACK_ROUTE_CACHE_KEY = `ev_monitor_track_route_config_${ACTIVE_CAMPUS_KEY}_v2`
 const TRACK_REPLAY_STEPS = 36
 
 const normalizeRoutePoints = (points) => Array.isArray(points)
@@ -2404,9 +2424,9 @@ const parkingGuideActiveRow = ref(null)
 let lastParkingGuideAutoKey = ''
 let parkingGuideAutoSending = false
 
-const SIM_CENTER = { lng: 112.6827629, lat: 26.8860959 }
+const SIM_CENTER = { lng: DEMO_POINT_BASE_LNG, lat: DEMO_POINT_BASE_LAT }
 const SIM_OWNER_NAMES = ['张晨', '李远', '王倩', '周航', '陈宇', '刘洋', '黄杰', '赵宁']
-const SIM_ROUTE_CORRIDORS = [
+const LEGACY_SIM_ROUTE_CORRIDORS = [
   [
     { lng: 112.680956, lat: 26.886856 },
     { lng: 112.681724, lat: 26.886792 },
@@ -2449,6 +2469,7 @@ const SIM_ROUTE_CORRIDORS = [
     { lng: 112.683928, lat: 26.886918 }
   ]
 ]
+const SIM_ROUTE_CORRIDORS = LEGACY_SIM_ROUTE_CORRIDORS.map((route) => route.map(translateCampusPoint))
 
 const filteredDevices = computed(() => devices.value)
 const routeKeyPart = (value) => normalizePopupKey(value).replace(/^track-/, '')
@@ -2790,7 +2811,7 @@ const buildSimPoints = (count, tick = 0) => {
     const corridorPoint = offsetAlongCorridor(interpolateRoutePoint(route, ratio), route, ratio, index, tick)
     return {
       id: `screen-demo-${index + 1}`,
-      licensePlate: `湘A${String(8300 + index).padStart(4, '0')}`,
+      licensePlate: `${ACTIVE_CAMPUS.platePrefix}${String(8300 + index).padStart(4, '0')}`,
       ownerName: SIM_OWNER_NAMES[index % SIM_OWNER_NAMES.length],
       lat: corridorPoint.lat,
       lng: corridorPoint.lng,
@@ -3009,11 +3030,12 @@ const fetchDevices = async () => {
       const batteryLevel = Number.isFinite(Number(v.battery)) ? Number(v.battery) : 0
       const status = normalizeDeviceStatus(v.status, batteryLevel, v.updateTime)
       const deviceNumber = v.deviceId || (v.vehicleId != null ? `GPS-${String(v.vehicleId).padStart(4, '0')}` : `DEVICE-${i + 1}`)
+      const campusPoint = normalizeCampusPoint({ lng: v.lng, lat: v.lat })
       return {
         deviceId: v.deviceId || v.vehicleId || i,
         deviceNumber, vehicleId: v.vehicleId,
         licensePlate: v.licensePlate, ownerName: v.ownerName,
-        currentLng: Number(v.lng), currentLat: Number(v.lat),
+        currentLng: campusPoint.lng, currentLat: campusPoint.lat,
         status, batteryLevel, lastReportTime: v.updateTime, unbound: !!v.unbound
       }
     })
@@ -3370,7 +3392,7 @@ const handleTrackReplayAction = (action, key) => {
   startTrackReplay(source, { minutes, speed })
 }
 
-const DEFAULT_PARKING_AREAS = Object.freeze([
+const LEGACY_DEFAULT_PARKING_AREAS = [
   {
     id: 'parking-south',
     name: '南门停车场',
@@ -3401,7 +3423,11 @@ const DEFAULT_PARKING_AREAS = Object.freeze([
       { lng: 112.68120, lat: 26.88786 }
     ])
   }
-])
+]
+const DEFAULT_PARKING_AREAS = Object.freeze(LEGACY_DEFAULT_PARKING_AREAS.map((area) => ({
+  ...area,
+  coordinates: JSON.stringify(JSON.parse(area.coordinates).map(translateCampusPoint))
+})))
 
 const pointInPolygon = (lng, lat, points) => {
   if (!Array.isArray(points) || points.length < 3) return false
@@ -3655,7 +3681,7 @@ const sendParkingGuidance = async (row, { silent = false } = {}) => {
 
 const locateDeviceOnMap = (dev) => {
   if (!map) { ElMessage.warning('地图未初始化'); return }
-  const point = new BMapGL.Point(dev.currentLng || 112.6827, dev.currentLat || 26.8860)
+  const point = new BMapGL.Point(dev.currentLng || DEMO_POINT_BASE_LNG, dev.currentLat || DEMO_POINT_BASE_LAT)
   map.centerAndZoom(point, 19)
   keep3DMapView()
   const marker = new BMapGL.Marker(point, { icon: new BMapGL.Icon('/img/vehicle_marker.png', new BMapGL.Size(32, 32)) })
@@ -3879,7 +3905,8 @@ a { text-decoration: none; }
 .BoxConTop { color: #33c2fe; font-size: 0.8rem; display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; flex-shrink: 0; }
 .BoxconTopLeft { float: left; margin-left: 3%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .BoxconTopRight { float: right; margin-right: 2%; flex-shrink: 0; }
-.boxLeftVideoBoxCon video { width: 100%; height: 100%; object-fit: cover; border-radius: 4px; }
+.boxLeftVideoBoxCon video,
+.boxLeftVideoBoxCon .live-stream { width: 100%; height: 100%; object-fit: cover; border-radius: 4px; display: block; background: #000; }
 .boxLeftAram { width: 100%; height: 35%; min-height: 220px; margin-top: 1%; display: flex; flex-direction: column; flex-shrink: 0; }
 .boxLeftAlamTop { width: 100%; height: 40px; background-image: url("/img/alamTop.png"); background-repeat: no-repeat; background-size: 100% 100%; flex-shrink: 0; }
 .boxLeftAlamCon { width: 100%; flex: 1; min-height: 180px; background-image: url("/img/alamCon.png"); background-repeat: no-repeat; background-size: 100% 100%; overflow: hidden; padding: 10px; display: flex; flex-direction: column; }

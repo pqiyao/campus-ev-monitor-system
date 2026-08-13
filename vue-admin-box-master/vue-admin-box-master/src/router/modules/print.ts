@@ -6,6 +6,7 @@ const route: Route[] = [
     path: '/print',
     component: Layout,
     redirect: '/print/js',
+    hideMenu: false,
     meta: { title: 'message.menu.print.name', icon: 'sfont system-24gl-printer' },
     children: [
       {
@@ -19,4 +20,4 @@ const route: Route[] = [
 
 export default route
 
-//红外巡检
+// 烟火视觉预警

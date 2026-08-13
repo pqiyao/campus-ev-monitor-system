@@ -84,7 +84,7 @@
                   <tr v-for="item in verifyList" :key="item.rectifyId">
                     <td><span class="id-cell">#{{ item.rectifyId }}</span></td>
                     <td><span class="vehicle-plate">{{ item.licensePlate || '—' }}</span></td>
-                    <td>{{ item.userName || '—' }}</td>
+                    <td>{{ displayPersonName(item.userName, item.userId ?? item.rectifyId) }}</td>
                     <td>{{ verifyGetViolationTypeName(item.illegalType) }}</td>
                     <td><div class="text-ellipsis" :title="item.rectifyDesc">{{ item.rectifyDesc || '—' }}</div></td>
                     <td>
@@ -149,7 +149,7 @@
             <div class="detail-grid">
               <div class="detail-row"><span class="dl">整改ID</span><span class="dv">#{{ verifyDetailDialog.item.rectifyId }}</span></div>
               <div class="detail-row"><span class="dl">车牌</span><span class="dv">{{ verifyDetailDialog.item.licensePlate }}</span></div>
-              <div class="detail-row"><span class="dl">车主</span><span class="dv">{{ verifyDetailDialog.item.userName }}</span></div>
+              <div class="detail-row"><span class="dl">车主</span><span class="dv">{{ displayPersonName(verifyDetailDialog.item.userName, verifyDetailDialog.item.userId ?? verifyDetailDialog.item.rectifyId) }}</span></div>
               <div class="detail-row"><span class="dl">状态</span><span class="dv"><span class="state-cell" :class="'state-' + verifyDetailDialog.item.verifyState">{{ verifyGetStateName(verifyDetailDialog.item.verifyState) }}</span></span></div>
               <div class="detail-row full"><span class="dl">整改说明</span><span class="dv">{{ verifyDetailDialog.item.rectifyDesc }}</span></div>
               <div class="detail-row full"><span class="dl">核实备注</span><span class="dv">{{ verifyDetailDialog.item.verifyRemark || '—' }}</span></div>
@@ -233,7 +233,7 @@
               <tr v-for="item in followList" :key="item.illegalId" :class="{ selected: followSelectedIds.includes(item.illegalId) }">
                 <td><input type="checkbox" class="tech-checkbox" :checked="followSelectedIds.includes(item.illegalId)" @change="followToggleSelect(item.illegalId)" /></td>
                 <td><span class="id-cell">#{{ item.illegalId }}</span></td>
-                <td><div class="student-info"><span class="sname">{{ item.ownerName || '—' }}</span><span class="sid">{{ item.licensePlate ? '' : '无车牌' }}</span></div></td>
+                <td><div class="student-info"><span class="sname">{{ displayPersonName(item.ownerName, item.userId ?? item.illegalId) }}</span><span class="sid">{{ item.licensePlate ? '' : '无车牌' }}</span></div></td>
                 <td><span class="vehicle-plate">{{ item.licensePlate || '—' }}</span></td>
                 <td>{{ followGetViolationTypeName(item.illegalType) }}</td>
                 <td>{{ followFormatDate(item.illegalTime) }}</td>
@@ -469,8 +469,8 @@
                       <td>
                         <div class="vehicle-cell" v-if="violation.licensePlate">
                           <div class="vehicle-plate">{{ violation.licensePlate }}</div>
-                          <div class="vehicle-owner">{{ violation.ownerName }}</div>
-                          <div class="vehicle-phone">{{ violation.phone }}</div>
+                          <div class="vehicle-owner">{{ displayPersonName(violation.ownerName, violation.userId ?? violation.illegalId) }}</div>
+                          <div class="vehicle-phone">{{ violation.phone ? '联系方式已隐藏' : '—' }}</div>
                         </div>
                         <div class="no-vehicle" v-else>未绑定车辆</div>
                       </td>
@@ -527,7 +527,7 @@
                       <td><span class="id-cell">#{{ appeal.appealId }}</span></td>
                       <td>#{{ appeal.illegalId }}</td>
                       <td>{{ appeal.licensePlate || '—' }}</td>
-                      <td>{{ appeal.userName || appeal.appellantName || '—' }}</td>
+                      <td>{{ displayPersonName(appeal.userName || appeal.appellantName, appeal.userId ?? appeal.appealId) }}</td>
                       <td><div class="text-ellipsis" :title="appeal.appealReason || appeal.reason">{{ appeal.appealReason || appeal.reason || '—' }}</div></td>
                       <td>{{ formatTime(appeal.appealTime || appeal.createTime) }}</td>
                       <td><span class="state-cell" :class="'state-' + appealAppealState(appeal)">{{ getAppealStatusText(appealAppealState(appeal)) }}</span></td>
@@ -571,7 +571,7 @@
                       <td><span class="id-cell">#{{ rectify.rectifyId }}</span></td>
                       <td>#{{ rectify.illegalId }}</td>
                       <td>{{ rectify.licensePlate || '—' }}</td>
-                      <td>{{ rectify.userName || rectify.ownerName || '—' }}</td>
+                      <td>{{ displayPersonName(rectify.userName || rectify.ownerName, rectify.userId ?? rectify.rectifyId) }}</td>
                       <td><div class="text-ellipsis" :title="rectify.rectifyDesc || rectify.description">{{ rectify.rectifyDesc || rectify.description || '—' }}</div></td>
                       <td>{{ formatTime(rectify.rectifyTime) }}</td>
                       <td><span class="state-cell" :class="'state-' + rectifyVerifyState(rectify)">{{ getRectifyStatusText(rectifyVerifyState(rectify)) }}</span></td>
@@ -614,7 +614,7 @@
                       <td><span class="id-cell">#{{ log.logId }}</span></td>
                       <td>{{ log.appealId ?? log.businessId ?? '—' }}</td>
                       <td><span class="op-type" :class="log.operationType">{{ getOperationTypeName(log.operationType) }}</span></td>
-                      <td>{{ log.operatorName || '系统' }}</td>
+                      <td>{{ log.operatorName ? displayPersonName(log.operatorName, log.logId) : '系统' }}</td>
                       <td>{{ log.operationDetail || '—' }}</td>
                       <td>{{ formatTime(log.createTime) }}</td>
                     </tr>
@@ -655,8 +655,8 @@
                 <div class="section-title">车辆信息</div>
                 <div class="info-grid">
                   <div class="info-item"><div class="info-label">车牌号码</div><div class="info-value">{{ currentViolation.licensePlate || '未绑定车辆' }}</div></div>
-                  <div class="info-item"><div class="info-label">车主姓名</div><div class="info-value">{{ currentViolation.ownerName || '未绑定车主' }}</div></div>
-                  <div class="info-item"><div class="info-label">联系电话</div><div class="info-value">{{ currentViolation.phone || '未绑定' }}</div></div>
+                  <div class="info-item"><div class="info-label">车主姓名</div><div class="info-value">{{ displayPersonName(currentViolation.ownerName, currentViolation.userId ?? currentViolation.illegalId, '未绑定车主') }}</div></div>
+                  <div class="info-item"><div class="info-label">联系电话</div><div class="info-value">{{ currentViolation.phone ? '联系方式已隐藏' : '未绑定' }}</div></div>
                   <div class="info-item"><div class="info-label">用户ID</div><div class="info-value">{{ currentViolation.userId || '未绑定' }}</div></div>
                 </div>
               </div>
@@ -725,7 +725,7 @@
               <div class="info-row"><span class="info-label">已绑定</span><span>车辆ID {{ reportForm.vehicleId }} · 用户ID {{ reportForm.userId }}</span></div>
               <div class="info-row"><span class="info-label">车牌</span><span>{{ reportForm.resolvedPlate || '—' }}</span></div>
               <div class="info-row"><span class="info-label">车架号</span><span>{{ reportForm.resolvedFrame || '—' }}</span></div>
-              <div class="info-row"><span class="info-label">车主</span><span>{{ reportForm.resolvedOwner || '—' }}</span></div>
+              <div class="info-row"><span class="info-label">车主</span><span>{{ displayPersonName(reportForm.resolvedOwner, reportForm.userId) }}</span></div>
               <div class="info-row"><span class="info-label">匹配方式</span><span>{{ reportMatchByLabel }}</span></div>
             </div>
             <div class="form-group"><label class="form-label">违规类型</label>
@@ -973,7 +973,7 @@ const followSaveNote = () => {
 const followGetProgressPct = (s) => ({ 0: 10, 1: 50, 2: 100, 3: 5, 4: 40 }[s] || 0)
 const followGetProgressColor = (s) => ({ 0:'#ff9800', 1:'#2196f3', 2:'#4caf50', 3:'#f44336', 4:'#9c27b0' }[s] || '#607d8b')
 const followGetStateName = (s) => ({ 0:'待整改',1:'整改中',2:'已整改',3:'逾期',4:'申诉中' }[s] || '未知')
-const followGetViolationTypeName = (t) => ({ 1:'违规停放',2:'超速行驶',3:'违规充电',4:'未登记',5:'进入禁行区',6:'违规载人',7:'遮挡车牌',8:'其他' }[t] || '未知')
+const followGetViolationTypeName = (t) => ({ 1:'违规停放',2:'超速行驶',3:'违规充电',4:'未登记',5:'进入禁行区',6:'违规载人',7:'遮挡车牌',8:'其他',9:'未佩戴头盔' }[t] || '未知')
 const followFormatDate = (t) => t ? new Date(t).toLocaleDateString('zh-CN') : '—'
 
 // ========== 模块3：违规闭环处置系统 ==========
@@ -1316,7 +1316,7 @@ const sendReminder = async (violation) => {
       return
     }
     await ElMessageBox.confirm(
-      `确定要发送提醒给车主 ${violation.ownerName || '未知'} 吗？`,
+      `确定要发送提醒给车主 ${displayPersonName(violation.ownerName, violation.userId ?? violation.illegalId, '未知')} 吗？`,
       '发送提醒',
       { confirmButtonText: '确定', cancelButtonText: '取消', type: 'warning' }
     )
@@ -1364,6 +1364,14 @@ const refreshData = () => {
 const getViolationTypeText = (type) => ({ 1:'违规停放',2:'超速行驶',3:'违规充电',4:'未登记车辆',5:'进入禁行区',6:'违规载人',7:'遮挡车牌',8:'其他违规' }[type] || '未知类型')
 const getSourceText = (source) => ({ 1:'摄像头识别',2:'人工举报',3:'人工上报' }[source] || '未知来源')
 const getStateText = (state) => ({ 0:'待整改',1:'整改中',2:'已整改',3:'逾期未整改' }[state] || '未知状态')
+const demoNames = ['张三', '李四', '王五', '赵六', '钱七', '孙八']
+const displayPersonName = (name, stableId, fallback = '—') => {
+  if (!name) return fallback
+  const source = String(stableId ?? name)
+  let hash = 0
+  for (let i = 0; i < source.length; i += 1) hash = (hash * 31 + source.charCodeAt(i)) >>> 0
+  return demoNames[hash % demoNames.length]
+}
 const getAppealStatusText = (status) => ({ 0:'待审核',1:'审核中',2:'申诉成功',3:'申诉失败',4:'已撤销',5:'已过期' }[status] || '未知')
 const appealAppealState = (a) => (a && (a.appealState ?? a.status)) ?? null
 const rectifyVerifyState = (r) => (r && (r.verifyState ?? r.status)) ?? null
@@ -1476,7 +1484,7 @@ const viewAppealDetail = (item) => {
     `申诉ID：${item.appealId}`,
     `违规ID：${item.illegalId}`,
     `车牌：${item.licensePlate || '—'}`,
-    `申诉人：${item.userName || '—'}`,
+      `申诉人：${displayPersonName(item.userName || item.appellantName, item.userId ?? item.appealId)}`,
     `理由：${item.appealReason || '—'}`,
     `状态：${getAppealStatusText(appealAppealState(item))}`,
     `时间：${formatTime(item.appealTime || item.createTime)}`

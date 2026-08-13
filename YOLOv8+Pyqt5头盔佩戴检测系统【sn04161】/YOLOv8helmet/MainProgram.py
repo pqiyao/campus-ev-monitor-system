@@ -9,7 +9,7 @@ import sys
 import threading
 import time
 import httpx
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import cv2
 import numpy as np
@@ -26,18 +26,42 @@ from ultralytics import YOLO
 # ------------------------------------------------------------
 # 违规上报配置
 # ------------------------------------------------------------
-SPRING_BOOT_URL = "http://localhost:8080/api/violation/report"
+SPRING_BOOT_BASE_URL = os.getenv("SPRING_BOOT_BASE_URL", "http://localhost:8083").rstrip("/")
+AI_EVENT_URL = f"{SPRING_BOOT_BASE_URL}/api/ai/events"
+AI_EVIDENCE_UPLOAD_URL = f"{SPRING_BOOT_BASE_URL}/api/ai/evidence/upload"
+AI_INGEST_KEY = os.getenv("AI_INGEST_KEY", "campus-yolo-local")
 VIOLATION_COOLDOWN_SEC = 30  # 载人等：同一摄像头、同一区域 30 秒内只记录一次
 # 未戴头盔由 NoHelmetTrackTracker 按轨迹去重；以下为匹配与轨迹超时（可按场景调）
 NO_HELMET_IOU_MATCH = 0.25       # 与上一帧同一目标的 IoU 高于此视为同一条轨迹
-NO_HELMET_TRACK_TTL_SEC = 1.5    # 连续未匹配超过此时长则删除轨迹，之后再次出现可再次上报
+NO_HELMET_TRACK_TTL_SEC = float(os.getenv("NO_HELMET_TRACK_TTL_SEC", "3.0"))
+NO_HELMET_CONFIRM_SEC = float(os.getenv("NO_HELMET_CONFIRM_SEC", "0.8"))
+NO_HELMET_MIN_HITS = int(os.getenv("NO_HELMET_MIN_HITS", "4"))
+NO_HELMET_MAX_WAIT_SEC = float(os.getenv("NO_HELMET_MAX_WAIT_SEC", "2.0"))
+NO_HELMET_BUFFER_SIZE = int(os.getenv("NO_HELMET_BUFFER_SIZE", "3"))
+AI_EVENT_QUEUE_SIZE = int(os.getenv("AI_EVENT_QUEUE_SIZE", "20"))
+AI_EVENT_WORKERS = int(os.getenv("AI_EVENT_WORKERS", "2"))
+AI_EVENT_RETRIES = int(os.getenv("AI_EVENT_RETRIES", "3"))
 
 # 违规类型映射（与后端约定一致）
-VIOLATION_TYPE_NO_HELMET = 7   # 未佩戴头盔
+VIOLATION_TYPE_NO_HELMET = 8   # 未佩戴头盔（当前后端暂归“其他违规”）
 VIOLATION_TYPE_OVERLOAD  = 6   # 违规载人
+EVENT_TYPE_SMOKE = -101
+EVENT_TYPE_FIRE = -102
+FIRE_SMOKE_CONF = float(os.getenv("FIRE_SMOKE_CONF", "0.40"))
+FIRE_SMOKE_CONFIRM_HITS = int(os.getenv("FIRE_SMOKE_CONFIRM_HITS", "2"))
+FIRE_SMOKE_COOLDOWN_SEC = float(os.getenv("FIRE_SMOKE_COOLDOWN_SEC", "60"))
+NETWORK_CAMERA_STREAMS = {
+    1: os.getenv("NETWORK_CAMERA_1_URL", "http://192.168.1.101:8081/stream.mjpg"),
+    2: os.getenv("NETWORK_CAMERA_2_URL", "http://192.168.1.101:8082/stream.mjpg"),
+    3: os.getenv("NETWORK_CAMERA_3_URL", "http://192.168.1.101:8083/stream.mjpg"),
+}
 
 # 去重缓存：key = (camera_id, violation_type, region) -> 上次上报时间戳（用于载人等整幅类违规）
 _violation_cooldown: Dict[Tuple[int, int, str], float] = {}
+_fire_smoke_hits: Dict[Tuple[int, int, str], Tuple[int, float]] = {}
+_fire_smoke_lock = threading.Lock()
+_ai_event_queue: Optional[asyncio.Queue] = None
+_ai_event_workers: List[asyncio.Task] = []
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # 服务端预览 WebSocket：推送 720p 框内缩放 JPEG + 二进制封包；推理仍用整帧
@@ -58,6 +82,65 @@ LABEL_COLORS_BGR = (
     (147, 69, 52), (255, 115, 100), (236, 24, 0), (255, 56, 132),
     (133, 0, 82), (255, 56, 203), (200, 149, 255), (199, 55, 255),
 )
+
+
+class LatestNetworkFrame:
+    """Continuously drain a network stream and expose only its newest frame."""
+
+    def __init__(self, stream_url: str):
+        self.stream_url = stream_url
+        self._condition = threading.Condition()
+        self._frame: Optional[np.ndarray] = None
+        self._sequence = 0
+        self._stopped = False
+        self._capture: Optional[cv2.VideoCapture] = None
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self) -> "LatestNetworkFrame":
+        self._thread.start()
+        return self
+
+    def _run(self) -> None:
+        while not self._stopped:
+            cap = cv2.VideoCapture(self.stream_url)
+            self._capture = cap
+            if not cap.isOpened():
+                cap.release()
+                time.sleep(1.0)
+                continue
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            while not self._stopped:
+                ok, frame = cap.read()
+                if not ok:
+                    break
+                with self._condition:
+                    self._frame = frame
+                    self._sequence += 1
+                    self._condition.notify_all()
+            cap.release()
+            self._capture = None
+            if not self._stopped:
+                time.sleep(0.25)
+
+    def read_after(self, sequence: int, timeout: float = 2.0) -> Tuple[int, Optional[np.ndarray]]:
+        deadline = time.monotonic() + timeout
+        with self._condition:
+            while not self._stopped and self._sequence <= sequence:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return sequence, None
+                self._condition.wait(remaining)
+            if self._frame is None:
+                return sequence, None
+            return self._sequence, self._frame.copy()
+
+    def stop(self) -> None:
+        self._stopped = True
+        with self._condition:
+            self._condition.notify_all()
+        if self._capture is not None:
+            self._capture.release()
+        self._thread.join(timeout=2.0)
 
 
 def _load_label_font() -> ImageFont.ImageFont:
@@ -94,10 +177,30 @@ def _iou_xyxy_norm(a: Tuple[float, float, float, float], b: Tuple[float, float, 
     return inter / union if union > 0 else 0.0
 
 
+def _evidence_quality(frame_bytes: bytes,
+                      box: Tuple[float, float, float, float, float]) -> float:
+    """Score a frame by detector confidence, target size and local sharpness."""
+    frame = cv2.imdecode(np.frombuffer(frame_bytes, np.uint8), cv2.IMREAD_GRAYSCALE)
+    if frame is None:
+        return float(box[4])
+    h, w = frame.shape[:2]
+    x1, y1, x2, y2, conf = box
+    bw = max(1.0, (x2 - x1) * w)
+    bh = max(1.0, (y2 - y1) * h)
+    left = max(0, int(x1 * w - bw * 2.0))
+    right = min(w, int(x2 * w + bw * 2.0))
+    top = max(0, int(y1 * h - bh))
+    bottom = min(h, int(y2 * h + bh * 7.0))
+    crop = frame[top:bottom, left:right]
+    sharpness = float(cv2.Laplacian(crop, cv2.CV_64F).var()) if crop.size >= 64 else 0.0
+    area = max(0.0, (x2 - x1) * (y2 - y1))
+    return float(conf) * 4.0 + min(sharpness / 250.0, 3.0) + min(area * 20.0, 2.0)
+
+
 class NoHelmetTrackTracker:
     """
-    未戴头盔目标跨帧关联：同一条轨迹在持续可见期间只触发一次上报，
-    避免「同一人经过数秒」因每帧检测或格子漂移导致重复计数。
+    未戴头盔目标跨帧关联与短时证据缓冲。候选轨迹达到持续时间和命中帧数后，
+    从有上限的清晰帧缓存中选择最佳证据，只触发一次上报。
 
     参数：
       iou_threshold  与已有轨迹匹配的最小 IoU
@@ -114,21 +217,51 @@ class NoHelmetTrackTracker:
         self._tracks: List[Dict[str, Any]] = []
         self._next_id = 0
 
+    def _add_sample(self, track: Dict[str, Any],
+                    box: Tuple[float, float, float, float, float],
+                    frame_bytes: bytes, now: float) -> None:
+        sample = {
+            "score": _evidence_quality(frame_bytes, box),
+            "frame_bytes": frame_bytes,
+            "bbox": (box[0], box[1], box[2], box[3]),
+            "conf": box[4],
+            "captured_at": now,
+        }
+        samples = list(track.get("samples", []))
+        samples.append(sample)
+        samples.sort(key=lambda item: item["score"], reverse=True)
+        track["samples"] = samples[:max(1, NO_HELMET_BUFFER_SIZE)]
+
+    def _ready(self, track: Dict[str, Any], now: float) -> bool:
+        age = now - track["first_seen"]
+        return (track["hits"] >= NO_HELMET_MIN_HITS and age >= NO_HELMET_CONFIRM_SEC) \
+            or (track["hits"] >= 2 and age >= NO_HELMET_MAX_WAIT_SEC)
+
+    def _report(self, camera_id: int, track: Dict[str, Any]) -> Tuple[Any, ...]:
+        samples = list(track.get("samples", []))
+        best = samples[0]
+        x1, y1, x2, y2 = best["bbox"]
+        return (
+            camera_id, VIOLATION_TYPE_NO_HELMET,
+            x1, y1, x2, y2, best["conf"], best["frame_bytes"], samples,
+        )
+
     def update(
         self,
         camera_id: int,
         boxes: List[Tuple[float, float, float, float, float]],
         now: float,
-    ) -> List[Tuple[int, int, float, float, float, float, float]]:
+        frame_bytes: bytes,
+    ) -> List[Tuple[Any, ...]]:
         """
         boxes: (x1,y1,x2,y2,conf) 均为相对整图 0~1 的归一化坐标。
         返回本帧需要上报的 pending 元组列表（与 report_violation_to_backend 参数一致）。
         """
-        reports: List[Tuple[int, int, float, float, float, float, float]] = []
+        reports: List[Tuple[Any, ...]] = []
         self._tracks = [t for t in self._tracks if now - t["last_seen"] <= self.track_ttl_sec]
 
-        used_box: set[int] = set()
-        used_track: set[int] = set()
+        used_box: Set[int] = set()
+        used_track: Set[int] = set()
         pairs: List[Tuple[float, int, int]] = []
         for bi, b in enumerate(boxes):
             bb = (b[0], b[1], b[2], b[3])
@@ -147,10 +280,10 @@ class NoHelmetTrackTracker:
             tr = self._tracks[j]
             tr["bbox"] = (b[0], b[1], b[2], b[3])
             tr["last_seen"] = now
-            if not tr.get("reported_no_helmet"):
-                reports.append(
-                    (camera_id, VIOLATION_TYPE_NO_HELMET, b[0], b[1], b[2], b[3], b[4])
-                )
+            tr["hits"] += 1
+            self._add_sample(tr, b, frame_bytes, now)
+            if not tr.get("reported_no_helmet") and self._ready(tr, now):
+                reports.append(self._report(camera_id, tr))
                 tr["reported_no_helmet"] = True
 
         for bi, b in enumerate(boxes):
@@ -161,13 +294,14 @@ class NoHelmetTrackTracker:
                 {
                     "id": self._next_id,
                     "bbox": (b[0], b[1], b[2], b[3]),
+                    "first_seen": now,
                     "last_seen": now,
-                    "reported_no_helmet": True,
+                    "hits": 1,
+                    "samples": [],
+                    "reported_no_helmet": False,
                 }
             )
-            reports.append(
-                (camera_id, VIOLATION_TYPE_NO_HELMET, b[0], b[1], b[2], b[3], b[4])
-            )
+            self._add_sample(self._tracks[-1], b, frame_bytes, now)
 
         return reports
 
@@ -176,10 +310,14 @@ class NoHelmetTrackTracker:
 # ------------------------------------------------------------
 model = YOLO(Config.model_path, task='detect')
 model_lock = threading.Lock()
+fire_smoke_model = YOLO(Config.fire_smoke_model_path, task='detect') if os.path.isfile(Config.fire_smoke_model_path) else None
+fire_smoke_model_lock = threading.Lock()
 
 
 def _warm_up_model() -> None:
     model(np.zeros((48, 48, 3), dtype=np.uint8))
+    if fire_smoke_model is not None:
+        fire_smoke_model(np.zeros((48, 48, 3), dtype=np.uint8))
 
 # ------------------------------------------------------------
 # 2. 本机 USB 摄像头发现
@@ -327,7 +465,6 @@ def parse_ultralytics_result(r: Any, camera_id: int) -> Dict[str, Any]:
                 moto_count += 1
             elif cn in ("no_helmet", "without"):
                 helmet_violations += 1
-                load_violation = True
                 no_helmet_boxes.append(
                     (
                         float(x1) / w,
@@ -361,11 +498,57 @@ def parse_ultralytics_result(r: Any, camera_id: int) -> Dict[str, Any]:
     }
 
 
+def detect_fire_smoke(image: np.ndarray, camera_id: int) -> Dict[str, Any]:
+    """Run the optional fire/smoke model and return normalized detections."""
+    if fire_smoke_model is None:
+        return {"boxes": [], "pending_violations": []}
+    with fire_smoke_model_lock:
+        result = fire_smoke_model(image, imgsz=640, conf=FIRE_SMOKE_CONF, verbose=False)[0]
+    h, w = int(result.orig_shape[0]), int(result.orig_shape[1])
+    boxes: List[Dict[str, Any]] = []
+    pending: List[Tuple[int, int, float, float, float, float, float]] = []
+    for box, conf, cls_id in zip(
+        result.boxes.xyxy.cpu().numpy(),
+        result.boxes.conf.cpu().numpy(),
+        result.boxes.cls.cpu().numpy(),
+    ) if result.boxes is not None and len(result.boxes) else []:
+        name = str(result.names[int(cls_id)]).lower()
+        event_code = EVENT_TYPE_FIRE if name == "fire" else EVENT_TYPE_SMOKE if name == "smoke" else None
+        if event_code is None:
+            continue
+        x1, y1, x2, y2 = [float(v) for v in box]
+        confidence = float(conf)
+        boxes.append({
+            "cls_id": int(cls_id),
+            "cls": name,
+            "model": "fire-smoke",
+            "x1": round(x1 / w, 4), "y1": round(y1 / h, 4),
+            "x2": round(x2 / w, 4), "y2": round(y2 / h, 4),
+            "conf": round(confidence, 2),
+        })
+        region = _region_id(x1 / w, y1 / h, x2 / w, y2 / h)
+        key = (camera_id, event_code, region)
+        now = time.time()
+        with _fire_smoke_lock:
+            previous_hits, previous_at = _fire_smoke_hits.get(key, (0, 0.0))
+            hits = previous_hits + 1 if now - previous_at <= 2.0 else 1
+            _fire_smoke_hits[key] = (hits, now)
+            if hits >= max(1, FIRE_SMOKE_CONFIRM_HITS):
+                pending.append((camera_id, event_code, x1 / w, y1 / h, x2 / w, y2 / h, confidence))
+                _fire_smoke_hits[key] = (0, now)
+    return {"boxes": boxes, "pending_violations": pending}
+
+
 def detect_and_get_boxes(image: np.ndarray, camera_id: int) -> Dict[str, Any]:
     """浏览器推流：小图快检。"""
     with model_lock:
         r = model(image, imgsz=320, verbose=False)[0]
     out = parse_ultralytics_result(r, camera_id)
+    safety = detect_fire_smoke(image, camera_id)
+    out["boxes"].extend(safety["boxes"])
+    out["pending_violations"].extend(safety["pending_violations"])
+    out["fire_count"] = sum(1 for b in safety["boxes"] if b["cls"] == "fire")
+    out["smoke_count"] = sum(1 for b in safety["boxes"] if b["cls"] == "smoke")
     out["success"] = True
     return out
 
@@ -458,6 +641,11 @@ def _video_preview_infer_and_encode(
         r = model(frame, verbose=False)[0]
     annotated_full = draw_project_style_detections(frame, r) if annotate else frame
     det = parse_ultralytics_result(r, camera_id)
+    safety = detect_fire_smoke(frame, camera_id)
+    det["boxes"].extend(safety["boxes"])
+    det["pending_violations"].extend(safety["pending_violations"])
+    det["fire_count"] = sum(1 for b in safety["boxes"] if b["cls"] == "fire")
+    det["smoke_count"] = sum(1 for b in safety["boxes"] if b["cls"] == "smoke")
 
     os.makedirs(Config.save_path, exist_ok=True)
     cv2.imwrite(
@@ -485,6 +673,35 @@ def _video_preview_infer_and_encode(
         return None
     return buf.tobytes(), det
 
+
+def _fire_smoke_preview_infer_and_encode(
+    frame: np.ndarray,
+    camera_id: int,
+) -> Optional[Tuple[bytes, Dict[str, Any]]]:
+    """Run only the local fire/smoke model and keep preview pixels aligned with boxes."""
+    safety = detect_fire_smoke(frame, camera_id)
+    h0, w0 = frame.shape[:2]
+    scale = min(PREVIEW_MAX_W / w0, PREVIEW_MAX_H / h0, 1.0)
+    preview = cv2.resize(
+        frame,
+        (int(w0 * scale), int(h0 * scale)),
+        interpolation=cv2.INTER_AREA,
+    ) if scale < 1.0 else frame
+    encoded, buffer = cv2.imencode(
+        ".jpg",
+        preview,
+        [int(cv2.IMWRITE_JPEG_QUALITY), PREVIEW_JPEG_QUALITY],
+    )
+    if not encoded:
+        return None
+    boxes = safety["boxes"]
+    return buffer.tobytes(), {
+        "boxes": boxes,
+        "pending_violations": safety["pending_violations"],
+        "fire_count": sum(1 for box in boxes if box["cls"] == "fire"),
+        "smoke_count": sum(1 for box in boxes if box["cls"] == "smoke"),
+    }
+
 # ------------------------------------------------------------
 # 6. 违规上报与去重
 # ------------------------------------------------------------
@@ -494,10 +711,80 @@ def _region_id(x1: float, y1: float, x2: float, y2: float, grid: int = 5) -> str
     cy = int((y1 + y2) / 2 * grid)
     return f"{cx}_{grid - 1 - cy}"  # 使 y 方向从上到下递增
 
+
+def _annotated_violation_frame(frame: np.ndarray, camera_id: int,
+                               x1: float, y1: float, x2: float, y2: float,
+                               confidence: float,
+                               label: str = "AI EVENT") -> Optional[bytes]:
+    """Create the human-review screenshot used as the formal violation evidence."""
+    h, w = frame.shape[:2]
+    left = max(0, min(w - 1, int(x1 * w)))
+    top = max(0, min(h - 1, int(y1 * h)))
+    right = max(left + 1, min(w, int(x2 * w)))
+    bottom = max(top + 1, min(h, int(y2 * h)))
+    annotated = frame.copy()
+    color = (40, 40, 230)
+    thickness = max(2, int(round(min(h, w) / 320)))
+    cv2.rectangle(annotated, (left, top), (right, bottom), color, thickness)
+    label = f"{label}  {confidence:.0%}"
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    scale = max(0.52, min(0.9, w / 1280.0))
+    label_size, _ = cv2.getTextSize(label, font, scale, 2)
+    label_top = max(0, top - label_size[1] - 16)
+    cv2.rectangle(
+        annotated,
+        (left, label_top),
+        (min(w, left + label_size[0] + 14), min(h, label_top + label_size[1] + 14)),
+        color,
+        -1,
+    )
+    cv2.putText(annotated, label, (left + 7, label_top + label_size[1] + 5),
+                font, scale, (255, 255, 255), 2, cv2.LINE_AA)
+    footer = f"Camera {camera_id}  {timestamp}"
+    cv2.putText(annotated, footer, (12, max(24, h - 14)), font, 0.55,
+                (255, 255, 255), 2, cv2.LINE_AA)
+    ok, encoded = cv2.imencode(".jpg", annotated, [int(cv2.IMWRITE_JPEG_QUALITY), 94])
+    return encoded.tobytes() if ok else None
+
+
+def _build_evidence_images(frame_bytes: bytes, camera_id: int,
+                           x1: float, y1: float, x2: float, y2: float,
+                           confidence: float,
+                           label: str = "AI EVENT") -> List[Tuple[str, bytes]]:
+    """Return marked evidence first, followed by source and rider context images."""
+    images: List[Tuple[str, bytes]] = []
+    frame = cv2.imdecode(np.frombuffer(frame_bytes, np.uint8), cv2.IMREAD_COLOR)
+    if frame is None:
+        return [("source.jpg", frame_bytes)]
+    marked = _annotated_violation_frame(
+        frame, camera_id, x1, y1, x2, y2, confidence, label
+    )
+    if marked is not None:
+        images.append(("violation.jpg", marked))
+    images.append(("source.jpg", frame_bytes))
+    h, w = frame.shape[:2]
+    box_w = max(1.0, (x2 - x1) * w)
+    box_h = max(1.0, (y2 - y1) * h)
+    left = max(0, int(x1 * w - box_w * 2.0))
+    right = min(w, int(x2 * w + box_w * 2.0))
+    top = max(0, int(y1 * h - box_h * 1.0))
+    bottom = min(h, int(y2 * h + box_h * 7.0))
+    if right - left < 32 or bottom - top < 32:
+        return images
+    crop = frame[top:bottom, left:right]
+    ok, encoded = cv2.imencode(".jpg", crop, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+    if ok:
+        images.append(("rider_context.jpg", encoded.tobytes()))
+    return images
+
 async def report_violation_to_backend(camera_id: int, violation_type: int,
                                       x1: float, y1: float,
                                       x2: float, y2: float,
-                                      conf: float):
+                                      conf: float,
+                                      frame_bytes: Optional[bytes] = None,
+                                      samples: Optional[List[Dict[str, Any]]] = None,
+                                      event_token: Optional[str] = None) -> bool:
     """
     异步上报违规到 Spring Boot 后端。
     未戴头盔：去重已由 NoHelmetTrackTracker 按轨迹完成，此处不再按格子冷却。
@@ -508,7 +795,8 @@ async def report_violation_to_backend(camera_id: int, violation_type: int,
         region = _region_id(x1, y1, x2, y2)
         key = (camera_id, violation_type, region)
         last = _violation_cooldown.get(key, 0)
-        if now - last < VIOLATION_COOLDOWN_SEC:
+        cooldown = FIRE_SMOKE_COOLDOWN_SEC if violation_type in (EVENT_TYPE_SMOKE, EVENT_TYPE_FIRE) else VIOLATION_COOLDOWN_SEC
+        if now - last < cooldown:
             return
         _violation_cooldown[key] = now
         if len(_violation_cooldown) > 1000:
@@ -517,29 +805,141 @@ async def report_violation_to_backend(camera_id: int, violation_type: int,
             for k in expired:
                 _violation_cooldown.pop(k, None)
 
-    # 构造上报数据（摄像头经纬度可从 cameras 列表获取，此处简化）
-    #    实际使用时可根据 camera_id 从全局 cameras 变量中查找对应坐标
-    payload = {
-        "vehicleId": None,
-        "userId": None,
-        "illegalType": violation_type,
-        "illegalLng": 112.6827629,  # 示例，应从摄像头配置读取
-        "illegalLat": 26.8860959,
-        "illegalTime": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "deductionPoints": 3,
-        "illegalSource": 1,          # 1=摄像头识别
-        "description": f"AI检测-置信度{conf:.0%}",
-        "cameraId": camera_id
-    }
+    if frame_bytes is None:
+        print(f"[AI事件] 缺少证据帧，跳过 camera={camera_id} type={violation_type}")
+        return False
+
+    event_type = {
+        VIOLATION_TYPE_NO_HELMET: "NO_HELMET",
+        VIOLATION_TYPE_OVERLOAD: "OVERLOAD",
+        EVENT_TYPE_SMOKE: "SMOKE_DETECTED",
+        EVENT_TYPE_FIRE: "FIRE_DETECTED",
+    }.get(violation_type)
+    if not event_type:
+        print(f"[AI事件] 未知事件类型，跳过 camera={camera_id} type={violation_type}")
+        return False
+    evidence_label = {
+        "SMOKE_DETECTED": "SMOKE",
+        "FIRE_DETECTED": "FIRE",
+        "NO_HELMET": "NO HELMET",
+        "OVERLOAD": "OVERLOAD",
+    }[event_type]
+    headers = {"X-AI-Ingest-Key": AI_INGEST_KEY}
     try:
-        async with httpx.AsyncClient(timeout=5) as client:
-            resp = await client.post(SPRING_BOOT_URL, json=payload)
-            if resp.status_code == 200:
-                print(f"[违规上报] 成功 camera={camera_id} type={violation_type}")
+        async with httpx.AsyncClient(timeout=60) as client:
+            evidence_urls: List[str] = []
+            evidence_payloads: List[Tuple[str, bytes]] = []
+            ranked_samples = (samples or [])[:max(1, NO_HELMET_BUFFER_SIZE)]
+            if ranked_samples:
+                best = ranked_samples[0]
+                best_images = _build_evidence_images(
+                    best["frame_bytes"], camera_id, *best["bbox"], best["conf"], evidence_label
+                )
+                evidence_payloads.extend(best_images[:3])
+            if not evidence_payloads:
+                evidence_payloads = _build_evidence_images(
+                    frame_bytes, camera_id, x1, y1, x2, y2, conf, evidence_label
+                )
+            # 第一张是带框正式证据，后两张是原图与骑行目标上下文，GPT最多接收三张。
+            seen_payloads: Set[bytes] = set()
+            for suffix, image_bytes in evidence_payloads:
+                if image_bytes in seen_payloads or len(evidence_urls) >= 3:
+                    continue
+                seen_payloads.add(image_bytes)
+                upload = await client.post(
+                    AI_EVIDENCE_UPLOAD_URL,
+                    headers=headers,
+                    files={"file": (f"camera_{camera_id}_{int(now * 1000)}_{suffix}", image_bytes, "image/jpeg")},
+                )
+                upload.raise_for_status()
+                upload_body = upload.json()
+                file_url = upload_body.get("data", {}).get("fileUrl")
+                if upload_body.get("code") != 200 or not file_url:
+                    raise RuntimeError(f"证据上传响应异常: {upload_body}")
+                evidence_urls.append(file_url)
+            payload = {
+                "eventType": event_type,
+                "sourceType": "CAMERA",
+                "deviceId": f"camera-{camera_id}",
+                "occurredAt": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "locationName": f"摄像头 {camera_id}",
+                "detectionConfidence": round(float(conf), 4),
+                "evidenceUrls": evidence_urls,
+                "rawPayload": {
+                    "cameraId": camera_id,
+                    "bbox": {"x1": x1, "y1": y1, "x2": x2, "y2": y2},
+                    "detector": "YOLOv8-fire-smoke" if event_type in ("FIRE_DETECTED", "SMOKE_DETECTED") else "YOLOv8-helmet",
+                    "eventType": event_type,
+                },
+                "idempotencyKey": event_token or f"camera-{camera_id}-{event_type}-{int(now * 1000)}",
+                "autoAnalyze": True,
+            }
+            resp = await client.post(AI_EVENT_URL, headers=headers, json=payload)
+            resp.raise_for_status()
+            body = resp.json()
+            if body.get("code") == 200:
+                event = body.get("data") or {}
+                print(f"[AI事件] 成功 camera={camera_id} type={event_type} event={event.get('event_id') or event.get('eventId')}")
+                return True
             else:
-                print(f"[违规上报] 状态码异常 {resp.status_code}")
+                print(f"[AI事件] 后端拒绝: {body}")
+                return False
     except Exception as e:
-        print(f"[违规上报] 请求失败: {e}")
+        print(f"[AI事件] 上报失败 camera={camera_id}: {e}")
+        raise
+
+
+async def _ai_event_worker(worker_id: int) -> None:
+    """Bounded uploader/AI-event worker; retries transient failures without frame storms."""
+    assert _ai_event_queue is not None
+    while True:
+        args, frame_bytes, samples, event_token = await _ai_event_queue.get()
+        try:
+            for attempt in range(1, max(1, AI_EVENT_RETRIES) + 1):
+                try:
+                    ok = await report_violation_to_backend(
+                        *args, frame_bytes=frame_bytes, samples=samples, event_token=event_token
+                    )
+                    if ok:
+                        break
+                    print(f"[AI队列] worker={worker_id} 后端未接受事件，不再重试")
+                    break
+                except Exception as ex:
+                    if attempt >= max(1, AI_EVENT_RETRIES):
+                        print(f"[AI队列] worker={worker_id} 最终失败: {ex}")
+                    else:
+                        await asyncio.sleep(min(2 ** (attempt - 1), 8))
+        finally:
+            _ai_event_queue.task_done()
+
+
+async def _ensure_ai_event_workers() -> None:
+    global _ai_event_queue, _ai_event_workers
+    if _ai_event_queue is None:
+        _ai_event_queue = asyncio.Queue(maxsize=max(1, AI_EVENT_QUEUE_SIZE))
+    alive = [worker for worker in _ai_event_workers if not worker.done()]
+    _ai_event_workers = alive
+    while len(_ai_event_workers) < max(1, AI_EVENT_WORKERS):
+        _ai_event_workers.append(asyncio.create_task(_ai_event_worker(len(_ai_event_workers) + 1)))
+
+
+async def _enqueue_ai_events(pending: List[Tuple[Any, ...]], fallback_frame: bytes) -> None:
+    await _ensure_ai_event_workers()
+    assert _ai_event_queue is not None
+    for vio in pending:
+        if len(vio) >= 9:
+            args = tuple(vio[:7])
+            frame_bytes = vio[7] or fallback_frame
+            samples = vio[8]
+        else:
+            args = tuple(vio)
+            frame_bytes = fallback_frame
+            samples = None
+        event_token = f"camera-{args[0]}-{args[1]}-{time.time_ns()}"
+        try:
+            _ai_event_queue.put_nowait((args, frame_bytes, samples, event_token))
+        except asyncio.QueueFull:
+            print(f"[AI队列] 已满，丢弃低优先级事件 camera={args[0]} type={args[1]}")
 
 # ------------------------------------------------------------
 # 7. REST API
@@ -547,6 +947,25 @@ async def report_violation_to_backend(camera_id: int, violation_type: int,
 @app.get("/api/cameras")
 async def get_cameras():
     return {"code": 200, "data": refresh_camera_cache()}
+
+
+@app.get("/api/ai/status")
+async def get_ai_status():
+    return {
+        "code": 200,
+        "data": {
+            "queueSize": _ai_event_queue.qsize() if _ai_event_queue is not None else 0,
+            "queueCapacity": AI_EVENT_QUEUE_SIZE,
+            "workers": len([task for task in _ai_event_workers if not task.done()]),
+            "workerLimit": AI_EVENT_WORKERS,
+            "retryLimit": AI_EVENT_RETRIES,
+            "trackTtlSec": NO_HELMET_TRACK_TTL_SEC,
+            "confirmSec": NO_HELMET_CONFIRM_SEC,
+            "minHits": NO_HELMET_MIN_HITS,
+            "maxWaitSec": NO_HELMET_MAX_WAIT_SEC,
+            "bufferSize": NO_HELMET_BUFFER_SIZE,
+        },
+    }
 
 @app.post("/api/snapshot")
 async def save_snapshot(req: SnapshotRequest):
@@ -597,7 +1016,7 @@ async def websocket_detection(websocket: WebSocket, camera_id: int):
                 nh = r.pop("no_helmet_boxes", [])
                 pend = r.pop("pending_violations", [])
                 r["pending_violations"] = helmet_tracker.update(
-                    camera_id, nh, time.time()
+                    camera_id, nh, time.time(), data
                 ) + pend
                 return r
 
@@ -620,12 +1039,13 @@ async def websocket_detection(websocket: WebSocket, camera_id: int):
                 "helmet_new_incidents": helmet_new_incidents,
                 "helmet_worn": result["helmet_worn"],
                 "load_violation": result["load_violation"],
+                "fire_count": result.get("fire_count", 0),
+                "smoke_count": result.get("smoke_count", 0),
                 "boxes": boxes,
             }, ensure_ascii=False))
 
             # 异步上报违规（不阻塞当前协程）
-            for vio in pending:
-                asyncio.create_task(report_violation_to_backend(*vio))
+            await _enqueue_ai_events(pending, data)
 
         except Exception as e:
             print(f"[WS] process error: {e}")
@@ -701,11 +1121,10 @@ async def websocket_video_test(websocket: WebSocket, camera_id: int):
             d = dict(det)
             nh = d.pop("no_helmet_boxes", [])
             pend = d.pop("pending_violations", [])
-            helmet_pend = helmet_tracker.update(camera_id, nh, time.time())
+            helmet_pend = helmet_tracker.update(camera_id, nh, time.time(), jpeg_bytes)
             pending = list(helmet_pend) + list(pend)
 
-            for vio in pending:
-                asyncio.create_task(report_violation_to_backend(*vio))
+            await _enqueue_ai_events(pending, jpeg_bytes)
 
             helmet_new_incidents = sum(
                 1 for p in pending if p[1] == VIOLATION_TYPE_NO_HELMET
@@ -720,6 +1139,8 @@ async def websocket_video_test(websocket: WebSocket, camera_id: int):
                 "helmet_new_incidents": helmet_new_incidents,
                 "helmet_worn": d["helmet_worn"],
                 "load_violation": d["load_violation"],
+                "fire_count": d.get("fire_count", 0),
+                "smoke_count": d.get("smoke_count", 0),
                 "annotated": False,
                 "boxes": d.get("boxes", []),
             }
@@ -784,11 +1205,10 @@ async def websocket_local_camera(websocket: WebSocket, camera_id: int):
             d = dict(det)
             nh = d.pop("no_helmet_boxes", [])
             pend = d.pop("pending_violations", [])
-            helmet_pend = helmet_tracker.update(camera_id, nh, time.time())
+            helmet_pend = helmet_tracker.update(camera_id, nh, time.time(), jpeg_bytes)
             pending = list(helmet_pend) + list(pend)
 
-            for vio in pending:
-                asyncio.create_task(report_violation_to_backend(*vio))
+            await _enqueue_ai_events(pending, jpeg_bytes)
 
             helmet_new_incidents = sum(
                 1 for p in pending if p[1] == VIOLATION_TYPE_NO_HELMET
@@ -804,6 +1224,8 @@ async def websocket_local_camera(websocket: WebSocket, camera_id: int):
                 "helmet_new_incidents": helmet_new_incidents,
                 "helmet_worn": d["helmet_worn"],
                 "load_violation": d["load_violation"],
+                "fire_count": d.get("fire_count", 0),
+                "smoke_count": d.get("smoke_count", 0),
                 "annotated": False,
                 "boxes": d.get("boxes", []),
             }
@@ -814,6 +1236,69 @@ async def websocket_local_camera(websocket: WebSocket, camera_id: int):
         print(f"[WS local_camera] error: {e}")
     finally:
         cap.release()
+
+
+@app.websocket("/ws/network_camera/{camera_id}")
+async def websocket_network_camera(websocket: WebSocket, camera_id: int):
+    """Read a LAN MJPEG source and run the local helmet + fire/smoke YOLO models."""
+    await websocket.accept()
+    stream_url = NETWORK_CAMERA_STREAMS.get(camera_id)
+    if not stream_url:
+        await websocket.send_text(json.dumps({
+            "success": False,
+            "error": f"No network stream configured for camera {camera_id}",
+        }, ensure_ascii=False))
+        await websocket.close(code=4004)
+        return
+
+    print(f"[WS network_camera] camera={camera_id} source={stream_url} local YOLO @ {PREVIEW_FPS}fps")
+    loop = asyncio.get_event_loop()
+    reader = LatestNetworkFrame(stream_url).start()
+    sequence = 0
+    last_tick = 0.0
+
+    try:
+        while True:
+            now = time.monotonic()
+            wait = 1.0 / PREVIEW_FPS - (now - last_tick)
+            if wait > 0:
+                await asyncio.sleep(wait)
+            last_tick = time.monotonic()
+
+            sequence, frame = await loop.run_in_executor(None, reader.read_after, sequence, 2.0)
+            if frame is None:
+                await websocket.send_text(json.dumps({
+                    "success": False,
+                    "error": "Network video stream is unavailable",
+                }, ensure_ascii=False))
+                await asyncio.sleep(0.25)
+                continue
+
+            out = await loop.run_in_executor(None, _fire_smoke_preview_infer_and_encode, frame, camera_id)
+            if out is None:
+                continue
+
+            jpeg_bytes, det = out
+            pending = list(det.get("pending_violations", []))
+            await _enqueue_ai_events(pending, jpeg_bytes)
+
+            meta = {
+                "success": True,
+                "mode": "network_camera_preview",
+                "camera_id": camera_id,
+                "model": "local-fire-smoke",
+                "fire_count": det.get("fire_count", 0),
+                "smoke_count": det.get("smoke_count", 0),
+                "annotated": False,
+                "boxes": det.get("boxes", []),
+            }
+            await websocket.send_bytes(pack_ws_binary_frame(meta, jpeg_bytes))
+    except WebSocketDisconnect:
+        print(f"[WS network_camera] disconnected camera={camera_id}")
+    except Exception as e:
+        print(f"[WS network_camera] error: {e}")
+    finally:
+        reader.stop()
 
 
 # ------------------------------------------------------------

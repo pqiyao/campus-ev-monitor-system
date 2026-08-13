@@ -14,6 +14,7 @@ import com.example.evmonitorplatform.mapper.UserMapper;
 import com.example.evmonitorplatform.mapper.VehicleMapper;
 import com.example.evmonitorplatform.mapper.ViolationMapper;
 import com.example.evmonitorplatform.service.LicensePointService;
+import com.example.evmonitorplatform.service.NotificationService;
 import com.example.evmonitorplatform.service.ViolationService;
 import com.example.evmonitorplatform.vo.request.ViolationQueryVO;
 import lombok.RequiredArgsConstructor;
@@ -37,6 +38,7 @@ public class ViolationServiceImpl extends ServiceImpl<ViolationMapper, Violation
     private final RectifyRecordMapper rectifyRecordMapper;
     private final JdbcTemplate jdbcTemplate;  // 新增 JdbcTemplate 注入
     private final LicensePointService licensePointService;
+    private final NotificationService notificationService;
     private final VehicleMapper vehicleMapper;
     private final UserMapper userMapper;
 
@@ -141,6 +143,19 @@ public class ViolationServiceImpl extends ServiceImpl<ViolationMapper, Violation
             throw new BusinessException("用户与车辆不一致：该车绑定车主 userId 为 " + vehicle.getUserId()
                     + "，与提交的 userId 不符，请重新「查询并绑定车辆」");
         }
+        if (violation.getIllegalType() == null) {
+            throw new BusinessException("违规类型不能为空");
+        }
+        List<Map<String, Object>> typeRows = jdbcTemplate.queryForList(
+                "SELECT type_name, deduction_points FROM violation_type WHERE type_id=?",
+                violation.getIllegalType());
+        if (typeRows.isEmpty()) {
+            throw new BusinessException("违规类型不存在：" + violation.getIllegalType());
+        }
+        Map<String, Object> violationType = typeRows.get(0);
+        int configuredPoints = violationType.get("deduction_points") instanceof Number number
+                ? Math.max(0, number.intValue()) : 0;
+        String typeName = String.valueOf(violationType.get("type_name"));
         violation.setIllegalState(0); // 待整改
         LocalDateTime now = LocalDateTime.now();
         // 库表 illegal_time 多为 NOT NULL；人工上报前端常不传，此前会导致插入失败并返回 400
@@ -151,9 +166,7 @@ public class ViolationServiceImpl extends ServiceImpl<ViolationMapper, Violation
         if (violation.getPointsDeducted() == null) {
             violation.setPointsDeducted(0);
         }
-        if (violation.getDeductionPoints() == null || violation.getDeductionPoints() < 0) {
-            violation.setDeductionPoints(2);
-        }
+        violation.setDeductionPoints(configuredPoints);
         if (violation.getIllegalSource() == null) {
             violation.setIllegalSource(2);
         }
@@ -161,6 +174,9 @@ public class ViolationServiceImpl extends ServiceImpl<ViolationMapper, Violation
         if (ok) {
             licensePointService.applyDeductionForViolation(violation);
             this.updateById(violation);
+            String content = "系统已记录一条" + typeName + "，违规编号 #" + violation.getIllegalId()
+                    + "，扣除 " + violation.getPointsDeducted() + " 分。请及时查看证据并完成整改；如有异议可在规定时限内申诉。";
+            notificationService.sendPersonalNotification("违规处理通知", content, violation.getUserId());
         }
         return ok;
     }

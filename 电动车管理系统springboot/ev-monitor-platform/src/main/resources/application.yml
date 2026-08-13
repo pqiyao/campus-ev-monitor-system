@@ -64,16 +64,16 @@ ev:
 ev-monitor:
   ai:
     # mock 模式用于本地演示；接入 OpenAI 兼容中转站时设为 gpt 并在环境变量注入密钥
-    mode: gpt
-    base-url: https://newapi.prorisehub.com/v1
-    api-key: sk-bKycQH0nhFlNTAxNl6SKQn92XueZrrVxHBxeHEe5Y7HtjorG
-    api-style: responses
-    model: gpt-5.6-sol
+    mode: ${AI_MODE:gpt}
+    base-url: ${AI_BASE_URL:https://newapi.prorisehub.com/v1}
+    api-key: sk-ZaJvnYoCoELfLvS7qiRa8ruX6G4ygo1P5uPKqwgNANjlWUub
+    api-style: ${AI_API_STYLE:responses}
+    model: ${AI_MODEL:gpt-5.6-sol}
     reasoning-effort: ${AI_REASONING_EFFORT:none}
     timeout-seconds: ${AI_TIMEOUT_SECONDS:45}
     fallback-to-mock: ${AI_FALLBACK_TO_MOCK:true}
     # 摄像头/无人机等设备调用 POST /api/ai/events 时使用；留空则只允许管理员 JWT 接入。
-    ingest-key: ${AI_INGEST_KEY:}
+    ingest-key: ${AI_INGEST_KEY:campus-yolo-local}
     auto-accept-threshold: ${AI_AUTO_ACCEPT_THRESHOLD:0.90}
     review-threshold: ${AI_REVIEW_THRESHOLD:0.75}
     identity-threshold: ${AI_IDENTITY_THRESHOLD:0.90}
@@ -81,8 +81,8 @@ ev-monitor:
       ILLEGAL_PARKING: 1
       RESTRICTED_AREA: 5
       OVERLOAD: 6
-      # 当前库中没有独立“未戴头盔”类型，暂归入“其他违规”(8)，可在后台新增类型后修改。
-      NO_HELMET: 8
+      NO_HELMET: 9
+      # 烟雾和明火属于安全事件，只进入人工复核，不映射为扣分违规类型。
   tcp:
     port: 9999
   mqtt:

@@ -31,6 +31,10 @@ public class MockAiModelGateway implements AiModelGateway {
                     "布防状态、移动轨迹与正常通行记录不一致", "建议立即告警并启动轨迹关注");
             case "RESTRICTED_AREA" -> fill(decision, 0.92, "HIGH", "车辆进入校园禁行区域",
                     "轨迹穿越启用中的禁行围栏", "建议生成复核任务并通知车主驶离");
+            case "SMOKE_DETECTED" -> fill(decision, 0.90, "CRITICAL", "摄像头画面疑似出现持续烟雾",
+                    "连续关键帧检测到烟雾目标，需现场核查是否靠近电动车或充电区域", "建议立即通知值班人员现场核查，不直接处罚");
+            case "FIRE_DETECTED" -> fill(decision, 0.94, "CRITICAL", "摄像头画面疑似出现明火",
+                    "检测到火焰目标，需立即确认现场并采取消防处置措施", "建议立即告警并人工复核，不直接处罚");
             default -> fill(decision, 0.95, "MEDIUM", "检测到驾驶人员疑似未佩戴安全头盔",
                     "连续关键帧均未发现有效头盔目标", "建议生成待确认治理事件");
         }
@@ -57,6 +61,8 @@ public class MockAiModelGateway implements AiModelGateway {
             case "ILLEGAL_PARKING" -> "违规停车";
             case "THEFT_RISK" -> "异常移动";
             case "RESTRICTED_AREA" -> "禁区通行";
+            case "SMOKE_DETECTED" -> "烟雾风险";
+            case "FIRE_DETECTED" -> "明火风险";
             default -> "未佩戴头盔";
         };
     }

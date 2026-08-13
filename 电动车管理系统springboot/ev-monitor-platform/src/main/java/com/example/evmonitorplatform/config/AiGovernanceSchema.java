@@ -270,6 +270,11 @@ public class AiGovernanceSchema implements ApplicationRunner {
                 create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 KEY idx_ai_appeal_review (appeal_id, create_time)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='AI申诉预审建议'
+            """,
+            """
+            INSERT INTO violation_type(type_id, type_name, description, deduction_points, penalty_amount, appeal_deadline)
+            SELECT 9, '未佩戴头盔', '骑乘校园电动车时未按规定佩戴安全头盔', 2, 0, 72
+            WHERE NOT EXISTS (SELECT 1 FROM violation_type WHERE type_id = 9)
             """
     );
 

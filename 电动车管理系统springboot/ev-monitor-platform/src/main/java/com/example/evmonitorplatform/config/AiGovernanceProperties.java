@@ -30,7 +30,7 @@ public class AiGovernanceProperties {
         mapping.put("ILLEGAL_PARKING", 1);
         mapping.put("RESTRICTED_AREA", 5);
         mapping.put("OVERLOAD", 6);
-        mapping.put("NO_HELMET", 8);
+        mapping.put("NO_HELMET", 9);
         return mapping;
     }
 }

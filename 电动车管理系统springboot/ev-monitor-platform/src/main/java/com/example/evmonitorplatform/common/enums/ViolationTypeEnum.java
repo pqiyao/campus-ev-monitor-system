@@ -11,7 +11,8 @@ public enum ViolationTypeEnum {
     NO_ENTRY_ZONE(5, "进入禁行区"),
     OVERLOAD(6, "违规载人"),
     LICENSE_PLATE_COVERED(7, "遮挡车牌"),
-    OTHER(8, "其他违规");
+    OTHER(8, "其他违规"),
+    NO_HELMET(9, "未佩戴头盔");
     
     private final Integer code;
     private final String description;

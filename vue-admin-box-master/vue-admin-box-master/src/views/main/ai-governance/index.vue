@@ -7,7 +7,7 @@
           <p>接入事件后先研判再人工确认，确认后才进入正式违规与通知流程。</p>
         </div>
         <div class="intro-actions">
-          <span class="quiet-tag">{{ config.model || '模型未配置' }} · {{ modeLabel }}</span>
+            <span class="quiet-tag">多模态视觉引擎 · {{ modeLabel }}</span>
           <el-button text :icon="Refresh" @click="refreshAll">刷新</el-button>
         </div>
       </header>
@@ -97,6 +97,35 @@
               </div>
             </div>
 
+            <div class="closure-strip" :class="{ completed: detail.violation_id }">
+              <div>
+                <span>正式违规状态</span>
+                <strong>{{ detail.violation_id ? `已生成 #${detail.violation_id}` : closureStatusText }}</strong>
+              </div>
+              <em>{{ closureStatusHint }}</em>
+            </div>
+
+            <div class="evidence-soft" v-if="evidenceUrls.length">
+              <div class="section-head">
+                <strong>违规证据</strong>
+                <span>{{ evidenceUrls.length }} 张 · 点击可放大</span>
+              </div>
+              <div class="evidence-grid">
+                <el-image
+                  v-for="(url, index) in evidenceUrls"
+                  :key="url"
+                  :src="fileUrl(url)"
+                  :preview-src-list="evidenceUrls.map(fileUrl)"
+                  :initial-index="index"
+                  fit="cover"
+                  preview-teleported
+                >
+                  <template #error><div class="evidence-error">图片加载失败</div></template>
+                </el-image>
+              </div>
+              <p>第一张为带检测框的正式违规截图，其余为原始画面与骑行目标上下文。</p>
+            </div>
+
             <div class="analysis-soft" v-if="latestAnalysis">
               <div class="analysis-head">
                 <strong>研判摘要</strong>
@@ -106,7 +135,7 @@
               <ul>
                 <li v-for="item in parseJson(latestAnalysis.observations_json)" :key="item">{{ item }}</li>
               </ul>
-              <small>{{ latestAnalysis.provider }} / {{ latestAnalysis.model_name }}</small>
+                <small>AI智能视觉分析 · {{ latestAnalysis.create_time }}</small>
             </div>
 
             <div class="timeline-soft" v-if="(detail.timeline || []).length">
@@ -141,8 +170,10 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { Refresh } from '@element-plus/icons'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { getApiOrigin } from '@/utils/apiBase'
 import {
   analyzeAiEvent,
   confirmAiIncident,
@@ -154,6 +185,7 @@ import {
   runAiDemo
 } from '@/api/aiGovernance'
 
+const route = useRoute()
 const config = reactive<any>({})
 const stats = reactive<any>({ total: 0, pendingReview: 0, confirmed: 0, openTasks: 0 })
 const demo = reactive({
@@ -185,16 +217,34 @@ const metricCards = computed(() => [
 ])
 
 const modeLabel = computed(() =>
-  config.mode === 'gpt' ? (config.apiKeyConfigured ? '在线' : '缺密钥') : '本地演示'
+  config.mode === 'gpt' ? (config.apiKeyConfigured ? '在线分析' : '待配置') : '本地演示'
 )
 const latestAnalysis = computed(() => detail.value?.analyses?.[0])
+const evidenceUrls = computed(() =>
+  (detail.value?.evidence || [])
+    .map((item: any) => item.evidence_url || item.evidenceUrl)
+    .filter(Boolean)
+)
+const closureStatusText = computed(() => {
+  if (detail.value.status === 'REJECTED') return '事件已驳回'
+  if (detail.value.status === 'ANALYSIS_FAILED') return 'AI研判失败'
+  if (!detail.value.vehicle_id || !detail.value.user_id) return '等待身份匹配'
+  if (detail.value.incident_id) return '等待管理员确认'
+  return '尚未进入正式违规'
+})
+const closureStatusHint = computed(() => {
+  if (detail.value.violation_id) return '已写入违规管理，可继续整改、申诉和积分处理'
+  if (!detail.value.vehicle_id || !detail.value.user_id) return '必须先可靠匹配车辆与学生，不能直接处罚'
+  return 'AI事件记录不会自动等同于正式违规，管理员确认后才会落库'
+})
 const canReview = computed(
   () =>
     detail.value.incident_id &&
     ['PENDING_REVIEW', 'PENDING_CONFIRMATION'].includes(detail.value.incident_state)
 )
+const SAFETY_EVENT_TYPES = new Set(['THEFT_RISK', 'SMOKE_DETECTED', 'FIRE_DETECTED'])
 const confirmButtonText = computed(() =>
-  detail.value.event_type === 'THEFT_RISK' ? '确认并通知' : '确认并生成违规'
+  SAFETY_EVENT_TYPES.has(detail.value.event_type) ? '确认并通知' : '确认并生成违规'
 )
 
 async function refreshAll() {
@@ -216,7 +266,15 @@ async function loadEvents() {
       limit: 80
     })
     events.value = r.data || []
-    if (!detail.value.event_id && events.value[0]) await openEvent(events.value[0])
+    const requestedEventId = Number(route.query.eventId)
+    const requestedEvent = Number.isFinite(requestedEventId)
+      ? events.value.find(item => Number(item.event_id) === requestedEventId)
+      : null
+    if (requestedEvent && Number(detail.value.event_id) !== requestedEventId) {
+      await openEvent(requestedEvent)
+    } else if (!detail.value.event_id && events.value[0]) {
+      await openEvent(events.value[0])
+    }
   } finally {
     loading.value = false
   }
@@ -252,7 +310,7 @@ async function reanalyze() {
   }
 }
 async function review(confirm: boolean) {
-  const securityOnly = detail.value.event_type === 'THEFT_RISK'
+  const securityOnly = SAFETY_EVENT_TYPES.has(detail.value.event_type)
   const action = confirm
     ? securityOnly
       ? '确认该风险并启动安全通知'
@@ -285,6 +343,11 @@ function parseJson(value: string) {
 function percent(value: number) {
   return `${Math.round((Number(value) || 0) * 100)}%`
 }
+function fileUrl(url: string) {
+  if (!url) return ''
+  if (/^https?:\/\//i.test(url) || url.startsWith('data:')) return url
+  return `${getApiOrigin()}${url.startsWith('/') ? url : `/${url}`}`
+}
 function typeLabel(type: string) {
   return (
     ({
@@ -292,7 +355,9 @@ function typeLabel(type: string) {
       OVERLOAD: '违规载人',
       ILLEGAL_PARKING: '违规停车',
       RESTRICTED_AREA: '禁区通行',
-      THEFT_RISK: '异常移动'
+      THEFT_RISK: '异常移动',
+      SMOKE_DETECTED: '烟雾风险',
+      FIRE_DETECTED: '明火风险'
     } as any)[type] ||
     type ||
     '—'
@@ -303,6 +368,7 @@ function stateLabel(state: string) {
     ({
       INGESTED: '待研判',
       ANALYZING: '研判中',
+      ANALYSIS_FAILED: '研判失败',
       REVIEW_PENDING: '待复核',
       AUTO_ACCEPTED: '自动受理',
       PENDING_REVIEW: '待复核',
@@ -649,6 +715,85 @@ onMounted(refreshAll)
   background: rgba(237, 245, 248, 0.9);
 }
 
+.closure-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 13px 14px;
+  border-left: 3px solid var(--warn);
+  background: rgba(255, 247, 232, 0.92);
+}
+
+.closure-strip.completed {
+  border-left-color: var(--ok);
+  background: rgba(235, 247, 240, 0.92);
+}
+
+.closure-strip span,
+.closure-strip em {
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+}
+
+.closure-strip strong {
+  display: block;
+  margin-top: 3px;
+  font-size: 14px;
+}
+
+.closure-strip em {
+  max-width: 250px;
+  text-align: right;
+  line-height: 1.55;
+}
+
+.evidence-soft {
+  margin-top: 16px;
+}
+
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.section-head span,
+.evidence-soft > p {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.evidence-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.evidence-grid :deep(.el-image) {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  background: #edf1f4;
+  cursor: zoom-in;
+}
+
+.evidence-error {
+  display: grid;
+  height: 100%;
+  place-items: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.evidence-soft > p {
+  margin: 8px 0 0;
+  line-height: 1.5;
+}
+
 .analysis-head {
   display: flex;
   justify-content: space-between;
@@ -767,6 +912,15 @@ onMounted(refreshAll)
 
   .soft-facts {
     grid-template-columns: 1fr;
+  }
+
+  .closure-strip {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .closure-strip em {
+    text-align: left;
   }
 
   .demo-fields .el-select,

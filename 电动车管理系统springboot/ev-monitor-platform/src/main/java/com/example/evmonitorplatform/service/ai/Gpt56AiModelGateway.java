@@ -9,7 +9,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
+import org.springframework.beans.factory.annotation.Value;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -20,6 +24,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Base64;
 
 @Component
 @RequiredArgsConstructor
@@ -28,10 +33,13 @@ public class Gpt56AiModelGateway implements AiModelGateway {
     private final AiGovernanceProperties properties;
     private final ObjectMapper objectMapper;
 
+    @Value("${ev-monitor.file.upload-path}")
+    private String uploadPath;
+
     @Override
     public AiModelDecision analyze(AiEvent event) {
         if (!StringUtils.hasText(properties.getApiKey())) {
-            throw new BusinessException("AI_MODE=gpt 时必须配置 AI_API_KEY");
+            throw new BusinessException("在线AI能力未配置有效凭证");
         }
         long started = System.nanoTime();
         try {
@@ -51,13 +59,13 @@ public class Gpt56AiModelGateway implements AiModelGateway {
                     .build();
             HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                throw new BusinessException("GPT兼容接口调用失败，HTTP " + response.statusCode());
+                throw new BusinessException("多模态视觉分析服务调用失败，HTTP " + response.statusCode());
             }
 
             JsonNode root = objectMapper.readTree(response.body());
             String content = responses ? extractResponsesText(root) : root.path("choices").path(0).path("message").path("content").asText();
             if (!StringUtils.hasText(content)) {
-                throw new BusinessException("GPT兼容接口未返回可解析的研判结果");
+                throw new BusinessException("AI视觉分析服务未返回可解析的研判结果");
             }
             AiModelDecision decision = objectMapper.readValue(stripCodeFence(content), AiModelDecision.class);
             validateDecision(decision);
@@ -72,14 +80,14 @@ public class Gpt56AiModelGateway implements AiModelGateway {
         } catch (BusinessException ex) {
             throw ex;
         } catch (Exception ex) {
-            throw new BusinessException("GPT研判失败: " + ex.getMessage());
+            throw new BusinessException("AI视觉研判失败: " + ex.getMessage());
         }
     }
 
     private Map<String, Object> responsesPayload(AiEvent event) {
         List<Map<String, Object>> content = new ArrayList<>();
         content.add(Map.of("type", "input_text", "text", eventPrompt(event)));
-        firstRemoteEvidence(event).ifPresent(url -> content.add(Map.of("type", "input_image", "image_url", url)));
+        evidenceInputs(event).forEach(url -> content.add(Map.of("type", "input_image", "image_url", url)));
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("model", properties.getModel());
         payload.put("reasoning", Map.of("effort", properties.getReasoningEffort()));
@@ -91,7 +99,7 @@ public class Gpt56AiModelGateway implements AiModelGateway {
     private Map<String, Object> chatPayload(AiEvent event) {
         List<Map<String, Object>> userContent = new ArrayList<>();
         userContent.add(Map.of("type", "text", "text", eventPrompt(event)));
-        firstRemoteEvidence(event).ifPresent(url -> userContent.add(Map.of("type", "image_url", "image_url", Map.of("url", url))));
+        evidenceInputs(event).forEach(url -> userContent.add(Map.of("type", "image_url", "image_url", Map.of("url", url))));
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("model", properties.getModel());
         payload.put("reasoning_effort", properties.getReasoningEffort());
@@ -106,7 +114,12 @@ public class Gpt56AiModelGateway implements AiModelGateway {
     private String systemPrompt() {
         return "你是校园电动车治理事件研判器。只返回JSON，不执行处罚。"
                 + "字段必须包含valid,eventType,confidence,riskLevel,identityReliable,evidenceSufficient,"
-                + "summary,recommendedAction,notificationText,observations。"
+                + "plateVisible,recognizedPlate,plateConfidence,summary,recommendedAction,notificationText,observations。"
+                + "请根据eventType核验证据图片：NO_HELMET检查未佩戴头盔；SMOKE_DETECTED检查是否存在持续烟雾；FIRE_DETECTED检查是否存在明火。"
+                + "烟雾和明火可能受雾气、蒸汽、灯光和反射干扰，必须说明可见依据；它们属于安全风险事件，不得建议直接处罚或扣分。"
+                + "仅在画面包含清晰车辆身份时读取与目标关联的校园电动车车牌。"
+                + "无法清晰读取或存在多个候选车牌时，recognizedPlate必须为null且plateConfidence不得高于0.5。"
+                + "车牌必须按图片原文返回，不得猜测；identityReliable仅表示车牌图像是否清晰可靠。"
                 + "confidence范围0到1，riskLevel仅允许LOW、MEDIUM、HIGH、CRITICAL。";
     }
 
@@ -121,22 +134,48 @@ public class Gpt56AiModelGateway implements AiModelGateway {
                 + ", occurredAt=" + event.getOccurredAt() + "。";
     }
 
-    private java.util.Optional<String> firstRemoteEvidence(AiEvent event) {
+    private List<String> evidenceInputs(AiEvent event) {
         if (!StringUtils.hasText(event.getEvidenceUrls())) {
-            return java.util.Optional.empty();
+            return List.of();
         }
+        List<String> result = new ArrayList<>();
         try {
             JsonNode array = objectMapper.readTree(event.getEvidenceUrls());
-            if (array.isArray() && !array.isEmpty()) {
-                String value = array.get(0).asText();
+            if (array.isArray()) {
+                for (JsonNode item : array) {
+                    if (result.size() >= 3) break;
+                    String value = item.asText();
+                    if (!StringUtils.hasText(value)) continue;
+                    if (value.startsWith("/uploads/")) {
+                        String dataUri = localUploadAsDataUri(value);
+                        if (dataUri != null) result.add(dataUri);
+                        continue;
+                    }
                 if (value.startsWith("https://") || value.startsWith("http://") || value.startsWith("data:")) {
-                    return java.util.Optional.of(value);
+                        result.add(value);
+                    }
                 }
             }
         } catch (Exception ignored) {
-            // Non-JSON evidence is omitted from the remote request.
+            // Invalid evidence entries are omitted from the model request.
         }
-        return java.util.Optional.empty();
+        return result;
+    }
+
+    private String localUploadAsDataUri(String url) {
+        try {
+            String relative = url.substring("/uploads/".length()).replace('/', java.io.File.separatorChar);
+            Path root = Paths.get(uploadPath).toAbsolutePath().normalize();
+            Path file = root.resolve(relative).normalize();
+            if (!file.startsWith(root) || !Files.isRegularFile(file)) return null;
+            byte[] bytes = Files.readAllBytes(file);
+            if (bytes.length > 10 * 1024 * 1024) return null;
+            String contentType = Files.probeContentType(file);
+            if (!StringUtils.hasText(contentType) || !contentType.startsWith("image/")) contentType = "image/jpeg";
+            return "data:" + contentType + ";base64," + Base64.getEncoder().encodeToString(bytes);
+        } catch (Exception ex) {
+            return null;
+        }
     }
 
     private String extractResponsesText(JsonNode root) {
@@ -155,15 +194,18 @@ public class Gpt56AiModelGateway implements AiModelGateway {
 
     private void validateDecision(AiModelDecision decision) {
         if (decision.getConfidence() < 0 || decision.getConfidence() > 1) {
-            throw new BusinessException("GPT返回的confidence不在0到1之间");
+            throw new BusinessException("AI返回的置信度不在0到1之间");
+        }
+        if (decision.getPlateConfidence() < 0 || decision.getPlateConfidence() > 1) {
+            throw new BusinessException("AI返回的车牌置信度不在0到1之间");
         }
         String risk = decision.getRiskLevel() == null ? "" : decision.getRiskLevel().toUpperCase(Locale.ROOT);
         if (!List.of("LOW", "MEDIUM", "HIGH", "CRITICAL").contains(risk)) {
-            throw new BusinessException("GPT返回了不支持的riskLevel");
+            throw new BusinessException("AI返回了不支持的风险等级");
         }
         decision.setRiskLevel(risk);
         if (!StringUtils.hasText(decision.getSummary()) || !StringUtils.hasText(decision.getRecommendedAction())) {
-            throw new BusinessException("GPT返回结果缺少summary或recommendedAction");
+            throw new BusinessException("AI研判结果缺少必要字段");
         }
     }
 

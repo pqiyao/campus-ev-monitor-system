@@ -13,6 +13,9 @@ public class AiModelDecision {
     private String riskLevel;
     private boolean identityReliable;
     private boolean evidenceSufficient;
+    private boolean plateVisible;
+    private String recognizedPlate;
+    private double plateConfidence;
     private String summary;
     private String recommendedAction;
     private String notificationText;

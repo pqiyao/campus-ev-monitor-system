@@ -65,6 +65,7 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/ai/events").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/ai/evidence/upload").permitAll()
                         .requestMatchers(PUBLIC_PATHS).permitAll()
                         .requestMatchers("/api/ai/**").hasRole("ADMIN")
                         .anyRequest().authenticated()

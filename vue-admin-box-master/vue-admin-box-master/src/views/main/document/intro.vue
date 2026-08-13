@@ -21,7 +21,7 @@
           <span class="chip" :class="aiConnectionStatus === 'connected' ? 'chip-ok' : 'chip-warn'">
             AI {{ aiConnectionStatus === 'connected' ? '已连接' : '未连接' }}
           </span>
-          <span v-if="streamActive" class="chip chip-live">LIVE</span>
+          <span v-if="slotFrameReady.some(Boolean)" class="chip chip-live">LIVE</span>
           <span v-if="serverPreviewMode" class="chip chip-videotest">服务端预览·二进制</span>
           <span v-if="selectedCamera" class="chip chip-muted">{{ selectedCamera.name }}</span>
         </div>
@@ -188,9 +188,9 @@
               <span>显示 {{ displayFps }} FPS</span>
               <span>检测 {{ detectionFps }} FPS</span>
             </div>
-            <label class="toggle-server-vt" title="由 Python/OpenCV 直接调用本机 USB 摄像头，支持多画面显示；没有摄像头的窗口保持黑屏。">
-              <input type="checkbox" v-model="serverPreviewMode" @change="onServerPreviewModeChange" />
-              本机摄像头
+            <label class="toggle-server-vt" title="两种模式均使用 8081/8082 局域网视频；关闭后改为浏览器直接播放 MJPEG，减少 Canvas 重绘。">
+              <input type="checkbox" v-model="hardwareMode" @change="onHardwareModeChange" />
+              {{ hardwareMode ? '局域网硬件' : '局域网流畅模式' }}
             </label>
             <label class="toggle-boxes">
               <input type="checkbox" v-model="showBoundingBoxes" />
@@ -224,13 +224,9 @@
                 v-if="isSlotConnecting(n)"
                 class="video-placeholder"
               >
-                <p>{{ serverPreviewMode ? '正在连接服务端预览…' : '正在请求本机摄像头…' }}</p>
+                <p>正在连接局域网视频流…</p>
                 <p class="sub">
-                  {{
-                    serverPreviewMode
-                      ? 'Python/OpenCV 正在读取本机 USB 摄像头。'
-                      : '预览使用浏览器摄像头；AI 由本机 Python :8000 完成。'
-                  }}
+                  正在读取硬件节点的 MJPEG 实时视频。
                 </p>
               </div>
               <div
@@ -245,7 +241,28 @@
                   1. 显示摄像头原始视频帧（由 rAF 循环写入）
                   2. 叠加 YOLO 检测框（由 drawDetectionBoxes 写入）
               -->
+              <img
+                v-if="!hardwareMode && getSlotCamera(n)?.videoUrl"
+                class="video-img hardware-direct-img"
+                :src="getSlotCamera(n).videoUrl"
+                alt="局域网实时视频"
+                @load="markHardwareFrameReady(n - 1)"
+              />
+              <div
+                v-if="!hardwareMode && showBoundingBoxes"
+                class="direct-box-layer"
+              >
+                <div
+                  v-for="(box, boxIndex) in (detectionResults[n - 1]?.boxes || [])"
+                  :key="`${box.cls}-${boxIndex}`"
+                  class="direct-detect-box"
+                  :style="directBoxStyle(box)"
+                >
+                  <span>{{ box.cls }} {{ Math.round((box.conf || 0) * 100) }}%</span>
+                </div>
+              </div>
               <canvas
+                v-show="hardwareMode"
                 :ref="el => setCanvasRef(el, n)"
                 class="video-img"
                 width="640"
@@ -275,7 +292,7 @@
         </div>
       </div>
  
-      <!-- 右侧地图/AI 信息区域 -->
+      <!-- 右侧地图/AI 信息区域（地图暂不显示，盒子保留） -->
       <div class="right camera_right">
         <div class="map-container">
           <div class="map-header">
@@ -289,33 +306,13 @@
               </button>
             </div>
           </div>
-          <div id="map" ref="mapContainer" v-show="mapMode === 'camera'"></div>
+          <div v-show="mapMode === 'camera'" class="map-placeholder">地图暂未启用</div>
           <div class="ai-info-panel" v-show="mapMode === 'ai'">
             <div class="ai-stats-header">
-              <span class="ai-title">实时检测统计</span>
+              <span class="ai-title">AI检测信息</span>
               <span class="camera-tag">{{ selectedCamera?.name || '未选择摄像头' }}</span>
             </div>
-            <div class="ai-stats-grid">
-              <div class="stat-card current">
-                <div class="stat-label">当前帧</div>
-                <div class="stat-value">人员 {{ currentFrameStats.person }}</div>
-                <div class="stat-value">两轮车 {{ currentFrameStats.moto }}</div>
-                <div class="stat-value" :class="{ warn: currentFrameStats.helmetViolation > 0 }">
-                  未戴头盔 {{ currentFrameStats.helmetViolation }}
-                </div>
-                <div class="stat-value" :class="{ warn: currentFrameStats.loadViolation }">
-                  载人违规 {{ currentFrameStats.loadViolation ? '是' : '否' }}
-                </div>
-              </div>
-              <div class="stat-card total">
-                <div class="stat-label">累计统计</div>
-                <div class="stat-value">处理帧数 {{ totalStats.frames }}</div>
-                <div class="stat-value">两轮车累计 {{ totalStats.motos }}</div>
-                <div class="stat-value">未戴头盔累计 {{ totalStats.helmetViolations }}</div>
-                <div class="stat-value">戴头盔累计 {{ totalStats.helmetWorn }}</div>
-                <div class="stat-value">载人违规累计 {{ totalStats.loadViolations }}</div>
-              </div>
-            </div>
+            <div class="ai-panel-placeholder"></div>
             <div class="ai-status">
               <span class="status-led" :class="aiConnectionStatus"></span>
               {{ aiConnectionStatus === 'connected' ? 'AI 检测服务已连接' : 'AI 检测服务未连接' }}
@@ -354,6 +351,7 @@
 import { ref, onMounted, onUnmounted, computed, watch, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
 import axios from 'axios'
+import { HARDWARE_CAMERAS } from '@/config/hardwareCameras'
  
 // ============================================================
 // 配置
@@ -362,6 +360,8 @@ const API_BASE_URL = 'http://localhost:8000/api'
 const WS_BASE_URL  = 'ws://localhost:8000/ws/detection'
 /** 服务端预览：二进制 [uint32 jsonLen][json][jpeg] */
 const WS_VIDEO_PREVIEW_BASE = 'ws://localhost:8000/ws/local_camera'
+const hardwareMode = ref(true)
+const HARDWARE_PAGE_CAMERAS = HARDWARE_CAMERAS.slice(0, 2)
  
 // 向后端发送检测帧的间隔（毫秒）。
 // 20ms ≈ 50fps 发送，后端会自动丢弃积压帧，实际推理受 GPU 速度决定。
@@ -417,6 +417,12 @@ let   serverFrameBitmap = null
 let   serverFrameBitmaps = []
 let   lastPreviewObjectUrl = null
 let   lastPreviewObjectUrls = []
+let   hardwareImages = []
+let   hardwarePollTimer = null
+const hardwarePreviousCounts = new Map()
+const hardwarePreviousFrames = new Map()
+let   hardwarePollGeneration = 0
+let   lastHardwareRenderAt = 0
  
 // ── 渲染循环相关 ──────────────────────────────────────────
 // 发送帧用 setInterval（固定频率，与 rAF 解耦）
@@ -436,8 +442,9 @@ let   detectionFrames = 0
 let   displayFrames   = 0
 let   fpsTick         = Date.now()
  
-// 地图
-const mapMode        = ref('camera')
+// 地图（百度地图暂不显示，右侧盒子保留）
+const showMap = false
+const mapMode        = ref('ai')
 const mapContainer   = ref(null)
 let   map            = null
 let   mapMarkers     = []
@@ -550,6 +557,13 @@ const updateTime = () => {
 const fetchCameras = async () => {
   camerasLoading.value = true
   try {
+    if (HARDWARE_PAGE_CAMERAS.length) {
+      cameraList.value = HARDWARE_PAGE_CAMERAS.map(camera => ({ ...camera, status: 'online', deviceIndex: camera.id, cameraType: '局域网视频检测节点' }))
+      pagination.value.pageNum = 1
+      if (!selectedCamera.value) selectedCamera.value = cameraList.value[0] || null
+      if (serverPreviewMode.value && !streamActive.value) startMultiCameraPreview()
+      return
+    }
     const response = await axios.get(`${API_BASE_URL}/cameras`)
     if (response.data.code === 200) {
       const backendCameras = response.data.data || []
@@ -638,6 +652,29 @@ const onServerPreviewModeChange = async () => {
   }
 }
 
+const onHardwareModeChange = async () => {
+  stopCapture()
+  disconnectWebSocket()
+  hardwareImages = []
+  hardwarePreviousCounts.clear()
+  streamActive.value = false
+  serverPreviewMode.value = true
+  await nextTick()
+  startMultiCameraPreview()
+}
+
+const markHardwareFrameReady = (index) => {
+  slotFrameReady.value[index] = true
+  aiConnectionStatus.value = 'connected'
+}
+
+const directBoxStyle = (box) => ({
+  left: `${Math.max(0, Number(box.x1) || 0) * 100}%`,
+  top: `${Math.max(0, Number(box.y1) || 0) * 100}%`,
+  width: `${Math.max(0, (Number(box.x2) || 0) - (Number(box.x1) || 0)) * 100}%`,
+  height: `${Math.max(0, (Number(box.y2) || 0) - (Number(box.y1) || 0)) * 100}%`,
+})
+
 const revokePreviewObjectUrl = (index = null) => {
   if (index !== null) {
     const oldUrl = lastPreviewObjectUrls[index]
@@ -662,6 +699,77 @@ const startMultiCameraPreview = () => {
   serverFrameBitmaps = Array(videoLayout.value).fill(null)
   slotFrameReady.value = Array(videoLayout.value).fill(false)
   detectionResults.value = Array(videoLayout.value).fill(null)
+  if (HARDWARE_PAGE_CAMERAS.length) {
+    hardwareImages = hardwareMode.value
+      ? slotCameras.value.map((camera, index) => {
+          if (!camera?.videoUrl) return null
+          const image = new Image()
+          image.onload = () => {
+            slotFrameReady.value[index] = true
+            aiConnectionStatus.value = 'connected'
+          }
+          image.src = camera.videoUrl
+          return image
+        })
+      : Array(videoLayout.value).fill(null)
+    streamActive.value = true
+    if (hardwareMode.value) startRenderLoop()
+    stopHardwarePolling()
+    const generation = ++hardwarePollGeneration
+    const pollHardwareDetections = async () => {
+      if (generation !== hardwarePollGeneration) return
+      if (document.visibilityState === 'hidden') {
+        hardwarePollTimer = window.setTimeout(pollHardwareDetections, 1000)
+        return
+      }
+      await Promise.allSettled(slotCameras.value.map(async (camera, index) => {
+        if (!camera?.detectionUrl) return
+        const controller = new AbortController()
+        const timeout = window.setTimeout(() => controller.abort(), 1500)
+        try {
+          const response = await fetch(camera.detectionUrl, { cache: 'no-store', signal: controller.signal })
+          if (!response.ok) throw new Error(`HTTP ${response.status}`)
+          const data = await response.json()
+          const frame = Number(data.frame)
+          if (Number.isFinite(frame) && hardwarePreviousFrames.get(camera.id) === frame) return
+          if (Number.isFinite(frame)) hardwarePreviousFrames.set(camera.id, frame)
+          const detections = Array.isArray(data.detections) ? data.detections : []
+          const boxes = detections.map(item => {
+            const raw = item.bbox || item.box || [item.x1, item.y1, item.x2, item.y2]
+            const values = Array.isArray(raw) ? raw.map(Number) : []
+            const width = Number(data.image_width) || 640
+            const height = Number(data.image_height) || 480
+            const normalized = values.length === 4 && values[2] > 1 ? [values[0] / width, values[1] / height, values[2] / width, values[3] / height] : values
+            return { cls: String(item.class || item.label || item.name || 'target'), conf: Number(item.confidence ?? item.conf ?? item.score ?? 0), x1: normalized[0] || 0, y1: normalized[1] || 0, x2: normalized[2] || 0, y2: normalized[3] || 0 }
+          })
+          const personCount = boxes.filter(item => item.cls.toLowerCase() === 'person').length
+          const motoCount = boxes.filter(item => /motor|bike|bicycle|电动车/i.test(item.cls)).length
+          const noHelmetCount = boxes.filter(item => /no[_ -]?helmet|未戴头盔/i.test(item.cls)).length
+          const helmetCount = boxes.filter(item => /^helmet$|已戴头盔/i.test(item.cls)).length
+          const previous = hardwarePreviousCounts.get(camera.id) || { noHelmet: 0, helmet: 0 }
+          const stats = {
+            success: true,
+            boxes,
+            person_count: personCount,
+            moto_count: motoCount,
+            helmet_violations: noHelmetCount,
+            helmet_new_incidents: Math.max(0, noHelmetCount - previous.noHelmet),
+            helmet_worn: Math.max(0, helmetCount - previous.helmet),
+            load_violation: false
+          }
+          hardwarePreviousCounts.set(camera.id, { noHelmet: noHelmetCount, helmet: helmetCount })
+          handleDetectionResult(stats, index)
+        } finally {
+          window.clearTimeout(timeout)
+        }
+      }))
+      if (generation === hardwarePollGeneration) {
+        hardwarePollTimer = window.setTimeout(pollHardwareDetections, 750)
+      }
+    }
+    void pollHardwareDetections()
+    return
+  }
   startDisplayOnlyPipeline()
   slotCameras.value.forEach((cam, index) => {
     if (cam && cam.status === 'online') connectServerPreviewSlot(index, cam)
@@ -711,6 +819,12 @@ const startCapture = async () => {
 const startRenderLoop = () => {
   if (renderRafId) { cancelAnimationFrame(renderRafId); renderRafId = null }
   const render = () => {
+    const renderNow = performance.now()
+    if (hardwareMode.value && renderNow - lastHardwareRenderAt < 40) {
+      renderRafId = requestAnimationFrame(render)
+      return
+    }
+    if (hardwareMode.value) lastHardwareRenderAt = renderNow
     const video = hiddenVideo.value
     const layout = videoLayout.value
     const detIdx = activeVideo.value - 1
@@ -725,7 +839,10 @@ const startRenderLoop = () => {
         if (useServerPlot) {
           ctx.fillStyle = '#000'
           ctx.fillRect(0, 0, canvas.width, canvas.height)
-          if (serverFrameBitmaps[i]) {
+          if (hardwareMode.value && hardwareImages[i]?.complete) {
+            ctx.drawImage(hardwareImages[i], 0, 0, canvas.width, canvas.height)
+            if (showBoundingBoxes.value && result?.boxes?.length) drawDetectionBoxes(ctx, canvas.width, canvas.height, result.boxes)
+          } else if (serverFrameBitmaps[i]) {
             ctx.drawImage(serverFrameBitmaps[i], 0, 0, canvas.width, canvas.height)
             if (showBoundingBoxes.value && result?.boxes?.length) {
               drawDetectionBoxes(ctx, canvas.width, canvas.height, result.boxes)
@@ -962,6 +1079,13 @@ const disconnectWebSocket = () => {
   previewWsList.value = Array(videoLayout.value).fill(null)
   revokePreviewObjectUrl()
   aiConnectionStatus.value = 'disconnected'
+  stopHardwarePolling()
+}
+
+const stopHardwarePolling = () => {
+  hardwarePollGeneration += 1
+  if (hardwarePollTimer) { clearTimeout(hardwarePollTimer); hardwarePollTimer = null }
+  hardwarePreviousFrames.clear()
 }
  
 // ============================================================
@@ -1146,7 +1270,7 @@ onMounted(() => {
   adjustLayout()
   window.addEventListener('resize', adjustLayout)
   fetchCameras()
-  setTimeout(loadBaiduMapAPI, 500)
+  if (showMap) setTimeout(loadBaiduMapAPI, 500)
   updateTime()
   timeTimer = setInterval(updateTime, 1000)
 })
@@ -1300,6 +1424,10 @@ body { font-family: 'Microsoft YaHei', Arial, sans-serif; font-size: 14px; color
 .video-item.active { border-color: #4b8df8; box-shadow: 0 0 15px rgba(75,141,248,.5); }
 .video-wrapper { width: 100%; height: 100%; min-height: 0; position: relative; }
 .video-img { width: 100%; height: 100%; object-fit: cover; background: #000; display: block; }
+.hardware-direct-img { position: absolute; inset: 0; }
+.direct-box-layer { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
+.direct-detect-box { position: absolute; border: 2px solid #00bfff; box-shadow: 0 0 6px rgba(0,191,255,.55); }
+.direct-detect-box span { position: absolute; top: -18px; left: -2px; padding: 1px 4px; color: #001428; background: #00bfff; font: bold 11px monospace; white-space: nowrap; }
 .video-overlay { position: absolute; top: 0; left: 0; right: 0; padding: 8px 10px; background: linear-gradient(to bottom,rgba(0,0,0,.7) 0%,rgba(0,0,0,0) 100%); display: flex; justify-content: space-between; align-items: center; }
 .video-title { font-size: 12px; color: #fff; display: flex; align-items: center; gap: 5px; }
 .live-badge { background: #ff4d4f; color: white; padding: 1px 5px; border-radius: 3px; font-size: 10px; animation: live-pulse 2s infinite; }
@@ -1324,8 +1452,10 @@ body { font-family: 'Microsoft YaHei', Arial, sans-serif; font-size: 14px; color
 .camera-dist-icon { background-image: url('/img/refresh.png'); }
 .ai-info-icon { background-image: url('/img/locate.png'); }
 #map { flex: 1; background: #f0f0f0; width: 100%; height: 100%; }
+.map-placeholder { flex: 1; display: flex; align-items: center; justify-content: center; color: rgba(75,141,248,.5); font-size: 14px; }
 .map-info { padding: 12px 15px; background: rgba(7,41,81,.6); border-top: 1px solid rgba(75,141,248,.2); }
 .ai-info-panel { flex: 1; background: rgba(10,30,61,.95); padding: 20px; overflow-y: auto; display: flex; flex-direction: column; }
+.ai-panel-placeholder { flex: 1; }
 .ai-stats-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; padding-bottom: 10px; border-bottom: 1px solid rgba(75,141,248,.3); }
 .ai-title { font-size: 16px; font-weight: 500; color: #4b8df8; letter-spacing: 1px; }
 .camera-tag { background: rgba(75,141,248,.2); padding: 4px 12px; border-radius: 16px; font-size: 12px; color: #27d4ff; }
