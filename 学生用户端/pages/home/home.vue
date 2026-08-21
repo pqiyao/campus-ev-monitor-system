@@ -156,8 +156,10 @@ import {
   getLicenseSummary
 } from '../../api/index.js'
 
-const DEF_LAT = 26.8860959
-const DEF_LNG = 112.6827629
+// 与管理端当前活动校区（桂林理工大学屏风校区）保持一致。
+// 车辆有实时定位时，refreshMapLocations 会继续用设备坐标覆盖默认中心点。
+const DEF_LAT = 25.2875179
+const DEF_LNG = 110.3239130
 const LOCATION_POLL_MS = 5000
 
 export default {
