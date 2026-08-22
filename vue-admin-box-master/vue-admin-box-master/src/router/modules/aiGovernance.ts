@@ -15,6 +15,10 @@ const route: Route[] = [{
     path: 'intelligence',
     component: createNameComponent(() => import('@/views/main/ai-governance/intelligence.vue')),
     meta: { title: 'AI 分析助手', icon: 'sfont system-data' }
+  }, {
+    path: 'patrol',
+    component: createNameComponent(() => import('@/views/main/patrol/index.vue')),
+    meta: { title: '低空巡检指挥台', icon: 'sfont system-monitor' }
   }]
 }]
 
