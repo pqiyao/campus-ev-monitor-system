@@ -55,7 +55,8 @@ public class AiGovernanceServiceImpl implements AiGovernanceService {
             "NO_HELMET", "OVERLOAD", "ILLEGAL_PARKING", "RESTRICTED_AREA", "THEFT_RISK",
             "SMOKE_DETECTED", "FIRE_DETECTED");
     private static final List<String> SUPPORTED_SOURCE_TYPES = List.of(
-            "SIMULATOR", "CAMERA", "DRONE", "GEOFENCE", "GPS", "MANUAL", "THIRD_PARTY");
+            "SIMULATOR", "CAMERA", "DRONE", "GROUND_ROBOT", "VEHICLE_TERMINAL",
+            "GEOFENCE", "GPS", "MANUAL", "THIRD_PARTY");
     private final AiEventMapper eventMapper;
     private final AiAnalysisMapper analysisMapper;
     private final GovernanceIncidentMapper incidentMapper;
@@ -208,12 +209,14 @@ public class AiGovernanceServiceImpl implements AiGovernanceService {
                 addTimeline(eventId, null, "ANALYSIS_FAILED", "AI智能研判失败", safeError(ex), "SYSTEM", null);
                 return getEventDetail(eventId);
             }
-            log.warn("在线AI研判失败，已降级到演示分析，eventId={}, reason={}", eventId, safeError(ex));
+            log.warn("在线AI研判失败，已降级到本地规则兜底，eventId={}, reason={}", eventId, safeError(ex));
             addTimeline(eventId, null, "MODEL_FALLBACK", "AI智能分析降级", safeError(ex), "SYSTEM", null);
             model = mockGateway.analyze(event);
             model.setProvider("mock-fallback");
             model.setRawResponse("fallback-reason:" + safeError(ex));
-            model.getObservations().add("在线AI分析暂不可用，本次结果由演示分析生成，必须人工复核");
+            // Mock gateways may return List.of(...); copy before appending fallback diagnostics.
+            model.setObservations(new ArrayList<>(model.getObservations() == null ? List.of() : model.getObservations()));
+            model.getObservations().add("在线AI分析暂不可用，本次结果由本地规则兜底生成，必须人工复核");
             model.setIdentityReliable(false);
         }
         applyRecognizedIdentity(event, model);

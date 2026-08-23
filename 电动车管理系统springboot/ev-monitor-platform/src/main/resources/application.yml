@@ -14,7 +14,7 @@ spring:
     driver-class-name: com.mysql.cj.jdbc.Driver
     url: jdbc:mysql://localhost:3306/ev_monitor?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
     username: root
-    password: 1234
+    password: ${DB_PASSWORD:1234}
     hikari:
       maximum-pool-size: 20
       minimum-idle: 5
@@ -62,11 +62,16 @@ ev:
     max-points: 12
 
 ev-monitor:
+  campus:
+    name: ${EV_CAMPUS_NAME:桂林理工大学屏风校区}
+    longitude: ${EV_CAMPUS_LONGITUDE:110.3239130}
+    latitude: ${EV_CAMPUS_LATITUDE:25.2875179}
   ai:
     # mock 模式用于本地演示；接入 OpenAI 兼容中转站时设为 gpt 并在环境变量注入密钥
     mode: ${AI_MODE:gpt}
     base-url: ${AI_BASE_URL:https://newapi.prorisehub.com/v1}
-    api-key: sk-ZaJvnYoCoELfLvS7qiRa8ruX6G4ygo1P5uPKqwgNANjlWUub
+    # 不把真实大模型密钥提交到工程；比赛部署时通过 AI_API_KEY 注入。
+    api-key: ${AI_API_KEY:}
     api-style: ${AI_API_STYLE:responses}
     model: ${AI_MODEL:gpt-5.6-sol}
     reasoning-effort: ${AI_REASONING_EFFORT:none}
@@ -89,7 +94,7 @@ ev-monitor:
     broker: tcp://180.184.41.179:1883 # 改成远程服务器
     client-id: ev-monitor-backend
     username: "admin" # 你登录EMQX后台的账号
-    password: "Aa123456" # 你登录EMQX后台的密码
+    password: ${MQTT_PASSWORD:Aa123456} # 通过环境变量覆盖设备消息总线凭证
     #    topic-location: ev/location/#       # 订阅所有车辆位置
     topic-location: position
     topic-violation: ev/violation # 订阅违规上报

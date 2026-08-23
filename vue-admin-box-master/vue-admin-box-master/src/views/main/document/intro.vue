@@ -353,6 +353,8 @@ import { ElMessage } from 'element-plus'
 import axios from 'axios'
 import { HARDWARE_CAMERAS } from '@/config/hardwareCameras'
  
+import { loadBaiduMapClassic } from '@/utils/map/baiduMap'
+
 // ============================================================
 // 配置
 // ============================================================
@@ -1215,13 +1217,9 @@ const initMap = () => {
     } catch { ElMessage.error('地图初始化失败') }
   })
 }
-const loadBaiduMapAPI = () => {
-  if (typeof BMap !== 'undefined') { initMap(); return }
-  const script = document.createElement('script')
-  script.src = 'https://api.map.baidu.com/api?v=3.0&ak=SUBe4C3SHSL9Uyd9P4xgq6GMdaZF2Irj&callback=initBaiduMap'
-  window.initBaiduMap = initMap
-  script.onerror = () => ElMessage.error('百度地图API加载失败')
-  document.head.appendChild(script)
+const loadBaiduMapAPI = async () => {
+  try { await loadBaiduMapClassic(); initMap() }
+  catch { ElMessage.error('百度地图API加载失败，请检查网络或 AK 白名单') }
 }
 const updateCameraMarkers = () => {
   if (!map || !cameraList.value.length) return

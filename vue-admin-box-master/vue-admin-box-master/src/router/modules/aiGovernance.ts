@@ -18,6 +18,8 @@ const route: Route[] = [{
   }, {
     path: 'patrol',
     component: createNameComponent(() => import('@/views/main/patrol/index.vue')),
+    // 保留直达调试页，但不把它暴露为比赛主菜单入口；主流程从原大屏进入。
+    hideMenu: true,
     meta: { title: '低空巡检指挥台', icon: 'sfont system-monitor' }
   }]
 }]

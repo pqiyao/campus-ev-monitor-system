@@ -29,7 +29,10 @@ from ultralytics import YOLO
 SPRING_BOOT_BASE_URL = os.getenv("SPRING_BOOT_BASE_URL", "http://localhost:8083").rstrip("/")
 AI_EVENT_URL = f"{SPRING_BOOT_BASE_URL}/api/ai/events"
 AI_EVIDENCE_UPLOAD_URL = f"{SPRING_BOOT_BASE_URL}/api/ai/evidence/upload"
+CAMERA_METADATA_URL = f"{SPRING_BOOT_BASE_URL}/api/ai/devices/cameras"
 AI_INGEST_KEY = os.getenv("AI_INGEST_KEY", "campus-yolo-local")
+CAMERA_METADATA_REFRESH_SEC = float(os.getenv("CAMERA_METADATA_REFRESH_SEC", "60"))
+CAMERA_COORDINATES_JSON = os.getenv("CAMERA_COORDINATES_JSON", "")
 VIOLATION_COOLDOWN_SEC = 30  # 载人等：同一摄像头、同一区域 30 秒内只记录一次
 # 未戴头盔由 NoHelmetTrackTracker 按轨迹去重；以下为匹配与轨迹超时（可按场景调）
 NO_HELMET_IOU_MATCH = 0.25       # 与上一帧同一目标的 IoU 高于此视为同一条轨迹
@@ -43,7 +46,7 @@ AI_EVENT_WORKERS = int(os.getenv("AI_EVENT_WORKERS", "2"))
 AI_EVENT_RETRIES = int(os.getenv("AI_EVENT_RETRIES", "3"))
 
 # 违规类型映射（与后端约定一致）
-VIOLATION_TYPE_NO_HELMET = 8   # 未佩戴头盔（当前后端暂归“其他违规”）
+VIOLATION_TYPE_NO_HELMET = 9   # 未佩戴头盔，与 aiGovernance 的统一违规类型映射一致
 VIOLATION_TYPE_OVERLOAD  = 6   # 违规载人
 EVENT_TYPE_SMOKE = -101
 EVENT_TYPE_FIRE = -102
@@ -62,6 +65,9 @@ _fire_smoke_hits: Dict[Tuple[int, int, str], Tuple[int, float]] = {}
 _fire_smoke_lock = threading.Lock()
 _ai_event_queue: Optional[asyncio.Queue] = None
 _ai_event_workers: List[asyncio.Task] = []
+_camera_metadata: Dict[int, Dict[str, Any]] = {}
+_camera_metadata_loaded_at = 0.0
+_camera_metadata_lock: Optional[asyncio.Lock] = None
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # 服务端预览 WebSocket：推送 720p 框内缩放 JPEG + 二进制封包；推理仍用整帧
@@ -82,6 +88,39 @@ LABEL_COLORS_BGR = (
     (147, 69, 52), (255, 115, 100), (236, 24, 0), (255, 56, 132),
     (133, 0, 82), (255, 56, 203), (200, 149, 255), (199, 55, 255),
 )
+
+
+def _env_camera_coordinates() -> Dict[int, Dict[str, Any]]:
+    """Read optional edge overrides; the backend database remains authoritative."""
+    if not CAMERA_COORDINATES_JSON.strip():
+        return {}
+    try:
+        raw = json.loads(CAMERA_COORDINATES_JSON)
+        result: Dict[int, Dict[str, Any]] = {}
+        for key, value in (raw.items() if isinstance(raw, dict) else []):
+            if not isinstance(value, dict):
+                continue
+            try:
+                camera_id = int(key)
+            except (TypeError, ValueError):
+                continue
+            longitude = value.get("longitude", value.get("lng"))
+            latitude = value.get("latitude", value.get("lat"))
+            if longitude is None or latitude is None:
+                continue
+            result[camera_id] = {
+                "longitude": float(longitude),
+                "latitude": float(latitude),
+                "location": str(value.get("location") or value.get("name") or f"摄像头 {camera_id}"),
+            }
+        return result
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        print(f"[摄像头元数据] CAMERA_COORDINATES_JSON 无法解析: {exc}")
+        return {}
+
+
+def _camera_coordinate(camera_id: int) -> Dict[str, Any]:
+    return _env_camera_coordinates().get(camera_id, {})
 
 
 class LatestNetworkFrame:
@@ -347,8 +386,10 @@ def _probe_local_camera(device_index: int) -> Optional[Dict[str, Any]]:
         fps = cap.get(cv2.CAP_PROP_FPS)
         if not fps or fps <= 1:
             fps = 30
+        camera_id = device_index + 1
+        coordinate = _camera_coordinate(camera_id)
         return {
-            "id": device_index + 1,
+            "id": camera_id,
             "deviceIndex": device_index,
             "name": f"USB Camera {device_index}",
             "location": f"Local USB Camera {device_index}",
@@ -357,8 +398,8 @@ def _probe_local_camera(device_index: int) -> Optional[Dict[str, Any]]:
             "type": "USB",
             "resolution": f"{w}x{h}",
             "frameRate": int(round(fps)),
-            "lng": 112.6827629 + device_index * 0.0001,
-            "lat": 26.8860959 + device_index * 0.0001,
+            "lng": coordinate.get("longitude"),
+            "lat": coordinate.get("latitude"),
         }
     finally:
         cap.release()
@@ -378,8 +419,10 @@ def discover_local_cameras(
             break
 
     for slot in range(len(found), slots):
+        camera_id = slot + 1
+        coordinate = _camera_coordinate(camera_id)
         found.append({
-            "id": slot + 1,
+            "id": camera_id,
             "deviceIndex": None,
             "name": f"Empty Slot {slot + 1}",
             "location": "No local camera detected",
@@ -388,8 +431,8 @@ def discover_local_cameras(
             "type": "USB",
             "resolution": "640x480",
             "frameRate": 0,
-            "lng": 112.6827629 + slot * 0.0001,
-            "lat": 26.8860959 + slot * 0.0001,
+            "lng": coordinate.get("longitude"),
+            "lat": coordinate.get("latitude"),
         })
     return found
 
@@ -778,6 +821,43 @@ def _build_evidence_images(frame_bytes: bytes, camera_id: int,
         images.append(("rider_context.jpg", encoded.tobytes()))
     return images
 
+
+async def _get_camera_metadata(client: httpx.AsyncClient) -> Dict[int, Dict[str, Any]]:
+    """Refresh authoritative camera coordinates with an edge-config fallback."""
+    global _camera_metadata, _camera_metadata_loaded_at, _camera_metadata_lock
+    now = time.monotonic()
+    if _camera_metadata and now - _camera_metadata_loaded_at < CAMERA_METADATA_REFRESH_SEC:
+        return _camera_metadata
+    if _camera_metadata_lock is None:
+        _camera_metadata_lock = asyncio.Lock()
+    async with _camera_metadata_lock:
+        now = time.monotonic()
+        if _camera_metadata and now - _camera_metadata_loaded_at < CAMERA_METADATA_REFRESH_SEC:
+            return _camera_metadata
+        headers = {"X-AI-Ingest-Key": AI_INGEST_KEY}
+        try:
+            response = await client.get(CAMERA_METADATA_URL, headers=headers)
+            response.raise_for_status()
+            body = response.json()
+            rows = body.get("data", []) if isinstance(body, dict) else []
+            refreshed: Dict[int, Dict[str, Any]] = {}
+            for row in rows if isinstance(rows, list) else []:
+                if not isinstance(row, dict) or row.get("id") is None:
+                    continue
+                try:
+                    camera_id = int(row["id"])
+                except (TypeError, ValueError):
+                    continue
+                refreshed[camera_id] = row
+            if refreshed:
+                _camera_metadata = refreshed
+        except Exception as exc:
+            print(f"[摄像头元数据] 后端读取失败，使用边缘配置: {exc}")
+        for camera_id, override in _env_camera_coordinates().items():
+            _camera_metadata.setdefault(camera_id, {}).update(override)
+        _camera_metadata_loaded_at = time.monotonic()
+    return _camera_metadata
+
 async def report_violation_to_backend(camera_id: int, violation_type: int,
                                       x1: float, y1: float,
                                       x2: float, y2: float,
@@ -857,16 +937,24 @@ async def report_violation_to_backend(camera_id: int, violation_type: int,
                 if upload_body.get("code") != 200 or not file_url:
                     raise RuntimeError(f"证据上传响应异常: {upload_body}")
                 evidence_urls.append(file_url)
+            camera_metadata = await _get_camera_metadata(client)
+            camera = camera_metadata.get(camera_id, {})
+            longitude = camera.get("longitude", camera.get("lng"))
+            latitude = camera.get("latitude", camera.get("lat"))
+            location_name = camera.get("location") or camera.get("name") or f"摄像头 {camera_id}"
             payload = {
                 "eventType": event_type,
                 "sourceType": "CAMERA",
                 "deviceId": f"camera-{camera_id}",
                 "occurredAt": time.strftime("%Y-%m-%d %H:%M:%S"),
-                "locationName": f"摄像头 {camera_id}",
+                "locationName": location_name,
+                "longitude": longitude,
+                "latitude": latitude,
                 "detectionConfidence": round(float(conf), 4),
                 "evidenceUrls": evidence_urls,
                 "rawPayload": {
                     "cameraId": camera_id,
+                    "cameraLocation": {"longitude": longitude, "latitude": latitude},
                     "bbox": {"x1": x1, "y1": y1, "x2": x2, "y2": y2},
                     "detector": "YOLOv8-fire-smoke" if event_type in ("FIRE_DETECTED", "SMOKE_DETECTED") else "YOLOv8-helmet",
                     "eventType": event_type,

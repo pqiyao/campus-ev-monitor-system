@@ -2,7 +2,7 @@ spring:
   datasource:
     url: jdbc:mysql://localhost:3306/ev_monitor?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
     username: root
-    password: 1234
+    password: ${DB_PASSWORD:1234}
   # ========== Redis 3.x 新配置写法 ==========
   data:
     redis:

@@ -14,6 +14,7 @@ import com.example.evmonitorplatform.vo.response.WeatherVO;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
@@ -32,6 +33,15 @@ public class MonitorServiceImpl implements MonitorService {
     private final VehicleMapper   vehicleMapper;
     private final UserMapper      userMapper;
     private final JdbcTemplate    jdbcTemplate;
+
+    @Value("${ev-monitor.campus.longitude:110.3239130}")
+    private double campusLongitude;
+
+    @Value("${ev-monitor.campus.latitude:25.2875179}")
+    private double campusLatitude;
+
+    @Value("${ev-monitor.campus.name:桂林理工大学屏风校区}")
+    private String campusName;
 
     @Override
     public DashboardVO getDashboardData() {
@@ -192,11 +202,12 @@ public class MonitorServiceImpl implements MonitorService {
     @Override
     public Map<String, Object> getMapData() {
         Map<String, Object> mapData = new HashMap<>();
-        // 中心点（衡阳师范学院）
+        // 中心点由当前部署校区配置提供，前端和巡检任务共用同一坐标基准。
         Map<String, Double> center = new HashMap<>();
-        center.put("lng", 112.6827629);
-        center.put("lat", 26.8860959);
+        center.put("lng", campusLongitude);
+        center.put("lat", campusLatitude);
         mapData.put("center", center);
+        mapData.put("campusName", campusName);
 
         List<Map<String, Object>> markers = new ArrayList<>();
 
@@ -235,7 +246,60 @@ public class MonitorServiceImpl implements MonitorService {
 
         mapData.put("markers", markers);
         mapData.put("paths", Collections.emptyList()); // 轨迹由 WebSocket 实时推送
+        // 巡检数据作为原地图数据的扩展图层返回，避免巡检模块维护第二套地图状态。
+        mapData.put("patrol", getPatrolOverlayData());
         return mapData;
+    }
+
+    /**
+     * 返回原大屏需要的巡检叠加数据。巡检表属于可选扩展模块，表尚未创建或历史数据异常时
+     * 只返回空图层，不能影响原车辆、摄像头和围栏地图。
+     */
+    private Map<String, Object> getPatrolOverlayData() {
+        Map<String, Object> result = new LinkedHashMap<>();
+        List<Map<String, Object>> missions = new ArrayList<>();
+        try {
+            List<Map<String, Object>> rows = jdbcTemplate.queryForList(
+                    "SELECT mission_id, mission_code, area_name, state, plan_version, battery_current, " +
+                            "center_lng, center_lat, update_time " +
+                    "FROM patrol_mission WHERE state IN ('DRAFT','PLANNED','RUNNING','PAUSED','RETURNING','MANUAL_CONTROL') " +
+                            "OR (state IN ('COMPLETED','FAILED') AND update_time >= DATE_SUB(NOW(), INTERVAL 1 DAY)) " +
+                            "ORDER BY CASE WHEN state IN ('RUNNING','RETURNING','MANUAL_CONTROL','PAUSED') THEN 0 ELSE 1 END, update_time DESC LIMIT 6");
+            for (Map<String, Object> mission : rows) {
+                Long missionId = asLong(mission.get("mission_id"));
+                if (missionId == null) continue;
+                Map<String, Object> item = new LinkedHashMap<>(mission);
+                item.put("waypoints", jdbcTemplate.queryForList(
+                        "SELECT waypoint_id, sequence_no, lng, lat, altitude_m, risk_score, state " +
+                                "FROM patrol_waypoint WHERE mission_id=? ORDER BY sequence_no", missionId));
+                item.put("trail", jdbcTemplate.queryForList(
+                        "SELECT lng, lat, recorded_at, battery, gps_quality " +
+                                "FROM drone_telemetry WHERE mission_id=? ORDER BY recorded_at DESC LIMIT 240", missionId));
+                item.put("events", jdbcTemplate.queryForList(
+                        "SELECT e.event_id, e.event_type, e.source_type, e.status, e.risk_level, " +
+                                "e.location_name, e.longitude, e.latitude, e.occurred_at, l.relation_type " +
+                                "FROM patrol_event_link l JOIN ai_event e ON e.event_id=l.event_id " +
+                        "WHERE l.mission_id=? ORDER BY e.occurred_at DESC LIMIT 20", missionId));
+                List<Map<String, Object>> latest = jdbcTemplate.queryForList(
+                        "SELECT lng, lat, altitude_m, speed_mps, battery, gps_quality, payload_state, recorded_at " +
+                                "FROM drone_telemetry WHERE mission_id=? ORDER BY recorded_at DESC LIMIT 1", missionId);
+                item.put("latestTelemetry", latest.isEmpty() ? null : latest.get(0));
+                missions.add(item);
+            }
+        } catch (Exception ex) {
+            log.debug("巡检叠加数据不可用: {}", ex.getMessage());
+        }
+        result.put("missions", missions);
+        result.put("updatedAt", LocalDateTime.now());
+        return result;
+    }
+
+    private Long asLong(Object value) {
+        try {
+            return value == null ? null : Long.valueOf(String.valueOf(value));
+        } catch (Exception ex) {
+            return null;
+        }
     }
 
     // ===== 工具方法 =====

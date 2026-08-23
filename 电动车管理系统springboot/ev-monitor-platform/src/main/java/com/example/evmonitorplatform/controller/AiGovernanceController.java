@@ -4,6 +4,7 @@ import com.example.evmonitorplatform.common.response.ApiResponse;
 import com.example.evmonitorplatform.common.exception.BusinessException;
 import com.example.evmonitorplatform.config.AiGovernanceProperties;
 import com.example.evmonitorplatform.entity.User;
+import com.example.evmonitorplatform.mapper.CameraMapper;
 import com.example.evmonitorplatform.mapper.UserMapper;
 import com.example.evmonitorplatform.service.AiGovernanceService;
 import com.example.evmonitorplatform.vo.request.AiDemoRunRequest;
@@ -33,6 +34,7 @@ public class AiGovernanceController {
     private final AiGovernanceService governanceService;
     private final AiGovernanceProperties properties;
     private final UserMapper userMapper;
+    private final CameraMapper cameraMapper;
 
     @Value("${ev-monitor.file.upload-path}")
     private String uploadPath;
@@ -83,6 +85,30 @@ public class AiGovernanceController {
 
     @GetMapping("/events")
     public ApiResponse<List<Map<String, Object>>> list(@RequestParam(required = false) String status, @RequestParam(required = false) String eventType, @RequestParam(defaultValue = "50") Integer limit) { return ApiResponse.success(governanceService.listEvents(status, eventType, limit)); }
+
+    /**
+     * Device metadata is read by camera/robot edge services with the same ingest
+     * credential used for event submission. It keeps coordinates authoritative in
+     * the campus database instead of duplicating them in detector code.
+     */
+    @GetMapping("/devices/cameras")
+    public ApiResponse<List<Map<String, Object>>> cameraDevices(
+            Authentication authentication,
+            @RequestHeader(value = "X-AI-Ingest-Key", required = false) String ingestKey) {
+        requireAdminOrIngestKey(authentication, ingestKey);
+        List<Map<String, Object>> result = cameraMapper.selectList(null).stream().map(camera -> {
+            Map<String, Object> item = new java.util.LinkedHashMap<>();
+            item.put("id", camera.getCameraId());
+            item.put("name", camera.getCameraName());
+            item.put("location", camera.getLocation());
+            item.put("status", camera.getStatus());
+            item.put("longitude", camera.getLocationLng());
+            item.put("latitude", camera.getLocationLat());
+            item.put("quality", camera.getQuality());
+            return item;
+        }).toList();
+        return ApiResponse.success(result);
+    }
 
     @GetMapping("/events/{eventId}")
     public ApiResponse<Map<String, Object>> detail(@PathVariable Long eventId) { return ApiResponse.success(governanceService.getEventDetail(eventId)); }

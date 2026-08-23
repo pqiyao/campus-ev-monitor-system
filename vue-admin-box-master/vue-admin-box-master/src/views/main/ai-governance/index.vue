@@ -19,18 +19,49 @@
         </div>
       </div>
 
-      <section class="demo-band">
-        <div class="demo-label">
-          <strong>模拟接入</strong>
-          <span>用于演示完整研判链路，车牌可留空</span>
+      <section class="patrol-band surface" v-loading="patrolLoading">
+        <div class="patrol-band__title">
+          <strong>无人机巡检任务</strong>
+          <span>任务结果统一回到本页 AI 事件和原有治理流程</span>
         </div>
-        <div class="demo-fields">
-          <el-select v-model="demo.scenario" placeholder="场景">
-            <el-option v-for="item in scenarios" :key="item.value" :label="item.label" :value="item.value" />
-          </el-select>
-          <el-input v-model="demo.licensePlate" placeholder="车牌（可选）" clearable />
-          <el-input v-model="demo.locationName" placeholder="发生地点" clearable />
-          <el-button type="primary" :loading="running" @click="runDemo">运行</el-button>
+        <div v-if="activePatrol" class="patrol-band__mission">
+          <div>
+            <b>{{ activePatrol.mission_code || `任务 #${activePatrol.mission_id}` }}</b>
+            <span>{{ activePatrol.area_name || '未指定区域' }} · {{ patrolStateLabel(activePatrol.state) }}</span>
+          </div>
+          <div class="patrol-band__facts">
+            <span>电量 {{ activePatrol.battery_current ?? '--' }}%</span>
+            <span>航线 V{{ activePatrol.plan_version ?? 0 }}</span>
+            <span>关联事件 {{ activePatrol.event_count ?? 0 }}</span>
+          </div>
+          <div class="patrol-band__actions">
+            <el-button size="small" @click="openDashboard">打开原大屏</el-button>
+            <el-button
+              v-if="['RUNNING', 'RETURNING', 'MANUAL_CONTROL'].includes(String(activePatrol.state || '').toUpperCase())"
+              size="small"
+              @click="togglePatrol(activePatrol)"
+            >暂停任务</el-button>
+            <el-button v-else-if="['PLANNED', 'PAUSED'].includes(String(activePatrol.state || '').toUpperCase())" size="small" type="primary" @click="togglePatrol(activePatrol)">继续任务</el-button>
+          </div>
+        </div>
+        <div v-else class="patrol-band__empty">
+          <span>当前没有活动巡检任务</span>
+          <el-button size="small" type="primary" @click="openDashboard">从原大屏发起巡检</el-button>
+        </div>
+        <div v-if="patrolAudit.length" class="patrol-trace">
+          <div class="patrol-trace__head">
+            <strong>任务执行记录</strong>
+            <span>{{ activePatrolDetail?.audit?.length || 0 }} 条审计</span>
+          </div>
+          <ol>
+            <li v-for="item in patrolAudit" :key="item.audit_id">
+              <span class="patrol-trace__dot" :class="String(item.state || '').toLowerCase()"></span>
+              <div>
+                <b>{{ item.action }}</b>
+                <small>{{ item.state }} · {{ item.create_time }}</small>
+              </div>
+            </li>
+          </ol>
         </div>
       </section>
 
@@ -170,7 +201,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { Refresh } from '@element-plus/icons'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getApiOrigin } from '@/utils/apiBase'
@@ -181,33 +212,23 @@ import {
   getAiEventDetail,
   getAiEvents,
   getAiStats,
-  rejectAiIncident,
-  runAiDemo
+  rejectAiIncident
 } from '@/api/aiGovernance'
+import { getMission as getPatrolMission, listMissions as listPatrolMissions, pauseMission as pausePatrolMission, startMission as startPatrolMission } from '@/api/patrol'
 
 const route = useRoute()
+const router = useRouter()
 const config = reactive<any>({})
 const stats = reactive<any>({ total: 0, pendingReview: 0, confirmed: 0, openTasks: 0 })
-const demo = reactive({
-  scenario: 'NO_HELMET',
-  licensePlate: '',
-  locationName: '东校区正门',
-  autoAnalyze: true
-})
 const filters = reactive({ status: '' })
 const events = ref<any[]>([])
 const detail = ref<any>({})
 const loading = ref(false)
 const detailLoading = ref(false)
 const running = ref(false)
-
-const scenarios = [
-  { label: '未佩戴头盔', value: 'NO_HELMET' },
-  { label: '违规载人', value: 'OVERLOAD' },
-  { label: '违规停车', value: 'ILLEGAL_PARKING' },
-  { label: '禁区通行', value: 'RESTRICTED_AREA' },
-  { label: '异常移动 / 盗抢风险', value: 'THEFT_RISK' }
-]
+const patrolLoading = ref(false)
+const patrolMissions = ref<any[]>([])
+const activePatrolDetail = ref<any>(null)
 
 const metricCards = computed(() => [
   { label: '接入事件', value: stats.total || 0, tone: '' },
@@ -215,9 +236,14 @@ const metricCards = computed(() => [
   { label: '已闭环', value: stats.confirmed || 0, tone: 'ok' },
   { label: '开放任务', value: stats.openTasks || 0, tone: 'info' }
 ])
+const activePatrol = computed(() => {
+  const executing = patrolMissions.value.find(item => ['RUNNING', 'RETURNING', 'MANUAL_CONTROL'].includes(String(item.state || '').toUpperCase()))
+  return executing || patrolMissions.value[0]
+})
+const patrolAudit = computed(() => Array.isArray(activePatrolDetail.value?.audit) ? activePatrolDetail.value.audit.slice(0, 8) : [])
 
 const modeLabel = computed(() =>
-  config.mode === 'gpt' ? (config.apiKeyConfigured ? '在线分析' : '待配置') : '本地演示'
+  config.mode === 'gpt' ? (config.apiKeyConfigured ? '在线分析' : '待配置') : '本地规则兜底'
 )
 const latestAnalysis = computed(() => detail.value?.analyses?.[0])
 const evidenceUrls = computed(() =>
@@ -248,7 +274,38 @@ const confirmButtonText = computed(() =>
 )
 
 async function refreshAll() {
-  await Promise.all([loadConfig(), loadStats(), loadEvents()])
+  await Promise.all([loadConfig(), loadStats(), loadEvents(), loadPatrolMissions()])
+}
+async function loadPatrolMissions() {
+  patrolLoading.value = true
+  try {
+    patrolMissions.value = await listPatrolMissions()
+    const missionId = Number(activePatrol.value?.mission_id)
+    activePatrolDetail.value = Number.isFinite(missionId) && missionId > 0
+      ? await getPatrolMission(missionId)
+      : null
+  } finally {
+    patrolLoading.value = false
+  }
+}
+function openDashboard() {
+  router.push({ path: '/dashboard' })
+}
+function patrolStateLabel(state: string) {
+  return ({ RUNNING: '执行中', PAUSED: '已暂停', PLANNED: '已规划', RETURNING: '返航中', MANUAL_CONTROL: '人工接管', COMPLETED: '已完成', FAILED: '失败' } as any)[state] || state || '未知'
+}
+async function togglePatrol(mission: any) {
+  const state = String(mission.state || '').toUpperCase()
+  if (!mission?.mission_id) return
+  patrolLoading.value = true
+  try {
+    if (['RUNNING', 'RETURNING', 'MANUAL_CONTROL'].includes(state)) await pausePatrolMission(Number(mission.mission_id))
+    else await startPatrolMission(Number(mission.mission_id))
+    await loadPatrolMissions()
+    ElMessage.success(state === 'RUNNING' ? '巡检任务已暂停' : '巡检任务已继续')
+  } finally {
+    patrolLoading.value = false
+  }
 }
 async function loadConfig() {
   const r: any = await getAiConfig()
@@ -286,17 +343,6 @@ async function openEvent(row: any) {
     detail.value = r.data || {}
   } finally {
     detailLoading.value = false
-  }
-}
-async function runDemo() {
-  running.value = true
-  try {
-    const r: any = await runAiDemo(demo)
-    detail.value = r.data || {}
-    ElMessage.success('模拟事件已完成研判')
-    await Promise.all([loadStats(), loadEvents()])
-  } finally {
-    running.value = false
   }
 }
 async function reanalyze() {
@@ -509,6 +555,132 @@ onMounted(refreshAll)
   background: var(--panel);
   box-shadow: 0 10px 28px rgba(24, 39, 56, 0.08);
   backdrop-filter: blur(10px);
+}
+
+.patrol-band {
+  margin-bottom: 16px;
+  padding: 14px 18px;
+}
+
+.patrol-band__title,
+.patrol-band__mission,
+.patrol-band__empty,
+.patrol-band__facts,
+.patrol-band__actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.patrol-band__title {
+  justify-content: space-between;
+  color: var(--ink);
+}
+
+.patrol-band__title span,
+.patrol-band__mission span,
+.patrol-band__empty span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.patrol-band__mission {
+  justify-content: space-between;
+  flex-wrap: wrap;
+  margin-top: 11px;
+  padding-top: 11px;
+  border-top: 1px solid var(--line);
+}
+
+.patrol-band__mission > div:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.patrol-band__facts {
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.patrol-band__empty {
+  justify-content: space-between;
+  margin-top: 11px;
+  padding-top: 11px;
+  border-top: 1px solid var(--line);
+}
+
+.patrol-trace {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.patrol-trace__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.patrol-trace__head span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.patrol-trace ol {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.patrol-trace li {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 9px;
+  background: rgba(245, 248, 250, 0.86);
+  border: 1px solid var(--line);
+}
+
+.patrol-trace__dot {
+  flex: 0 0 7px;
+  width: 7px;
+  height: 7px;
+  margin-top: 4px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.patrol-trace__dot.failed,
+.patrol-trace__dot.injected {
+  background: #d36b5f;
+}
+
+.patrol-trace__dot.succeeded,
+.patrol-trace__dot.completed {
+  background: #4aa582;
+}
+
+.patrol-trace b,
+.patrol-trace small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.patrol-trace b {
+  font-size: 12px;
+}
+
+.patrol-trace small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 10px;
 }
 
 .demo-label {
@@ -898,6 +1070,21 @@ onMounted(refreshAll)
   .demo-fields {
     justify-content: flex-start;
   }
+
+  .patrol-trace ol {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 1300px) {
+  .gov-page {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .work-split {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 680px) {
@@ -926,6 +1113,10 @@ onMounted(refreshAll)
   .demo-fields .el-select,
   .demo-fields .el-input {
     width: 100%;
+  }
+
+  .patrol-trace ol {
+    grid-template-columns: 1fr;
   }
 }
 </style>

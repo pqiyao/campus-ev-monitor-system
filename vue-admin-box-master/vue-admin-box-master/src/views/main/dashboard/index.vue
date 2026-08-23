@@ -99,6 +99,10 @@
         <div class="map_con left" id="car_control">
           <div class="left map_left">
             <div class="map_box" id="map_box"></div>
+            <button class="patrol-launch-button" type="button" @click="openPatrolDialog">
+              <span class="patrol-launch-button__dot"></span>
+              智能巡检
+            </button>
             <canvas
               v-show="showHeatmap"
               id="vehicle_heatmap_canvas"
@@ -237,6 +241,29 @@
                 <button class="route-float-btn primary" type="button" @click="saveTrackRouteConfig">保存轨迹</button>
                 <button class="route-float-btn" type="button" @click="openLocationDialog">定位管理</button>
                 <button class="route-float-btn danger" type="button" @click="finishTrackRouteEditing">结束</button>
+              </div>
+            </div>
+
+            <div v-if="patrolSummary.visible" class="patrol-overlay-summary">
+              <div class="patrol-overlay-summary__head">
+                <span>智能巡检叠加</span>
+                <button type="button" @click="openPatrolGovernance">查看治理事件</button>
+              </div>
+              <div class="patrol-overlay-summary__body">
+                <b>{{ patrolSummary.running }} 个任务执行中</b>
+                <span>{{ patrolSummary.events }} 个巡检事件</span>
+                <span v-if="patrolSummary.latest">无人机 {{ patrolSummary.latest }}</span>
+              </div>
+              <div v-if="patrolSummary.eventList.length" class="patrol-overlay-summary__events">
+                <button
+                  v-for="event in patrolSummary.eventList"
+                  :key="event.event_id || event.eventId"
+                  type="button"
+                  @click="openPatrolEvent(event)"
+                >
+                  <span>{{ event.event_type || '巡检事件' }}</span>
+                  <small>{{ event.location || event.area_name || '地图事件' }}</small>
+                </button>
               </div>
             </div>
 
@@ -661,11 +688,30 @@
         </span>
       </template>
     </el-dialog>
+
+    <el-dialog
+      v-model="patrolDialogVisible"
+      title="从原大屏发起智能巡检"
+      width="460px"
+      :close-on-click-modal="false"
+    >
+      <div class="patrol-dialog-form">
+        <label>巡检目标<input v-model="patrolForm.goal" placeholder="例如：巡查东校区禁停区和高风险车辆" /></label>
+        <label>巡检区域<input v-model="patrolForm.areaName" placeholder="例如：东校区" /></label>
+        <label>任务时限（秒）<input v-model.number="patrolForm.durationLimitSec" type="number" min="120" max="3600" /></label>
+        <label class="patrol-dialog-check"><input v-model="patrolForm.autoStart" type="checkbox" /> 规划完成后立即启动仿真执行</label>
+      </div>
+      <template #footer>
+        <el-button @click="patrolDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="patrolCreating" @click="createPatrolMissionFromDashboard">创建并规划</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { ref, computed, reactive, onMounted, onUnmounted, nextTick } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElDialog, ElButton, ElMessage, ElMessageBox } from 'element-plus'
 import axios from 'axios'
 import * as echarts from 'echarts'
@@ -676,8 +722,10 @@ import {
   ACTIVE_CAMPUS_KEY,
   normalizeCampusPoint
 } from '@/config/campusMap'
+import { loadBaiduMapGL } from '@/utils/map/baiduMap'
 
 const API_BASE_URL = getApiBaseUrl()
+const router = useRouter()
 const liveStreamUrls = HARDWARE_CAMERAS.slice(0, 2).map(camera => camera.videoUrl)
 const camera1 = ref(null)
 const camera2 = ref(null)
@@ -822,6 +870,15 @@ const demoPointMotionOrigins = new Map()
 // ---------- 核心业务数据 ----------
 const dashboardData = ref({ statistics: null, cameras: [], weather: null })
 const alertList = ref([])
+const patrolSummary = ref({ visible: false, running: 0, events: 0, latest: '', eventList: [] })
+const patrolDialogVisible = ref(false)
+const patrolCreating = ref(false)
+const patrolForm = reactive({
+  goal: '巡查校园电动车高风险区域，发现异常后回传原AI事件中心',
+  areaName: ACTIVE_CAMPUS.name || '当前校区',
+  durationLimitSec: 720,
+  autoStart: true
+})
 
 // 车辆搜索
 const vehicleSearch = ref({ color: '', brand: '', plate: '' })
@@ -836,6 +893,7 @@ const detailDialog = ref({ visible: false, title: '', content: '' })
 let map = null
 const mapDataOverlays = []
 const geofenceOverlays = []
+const patrolOverlays = []
 const parkingGuideOverlays = []
 const demoPointMarkers = new Map()
 let mapContainerEl = null
@@ -1861,6 +1919,189 @@ const fetchMapData = async () => {
   }
 }
 
+const clearPatrolOverlays = () => {
+  while (patrolOverlays.length) {
+    const overlay = patrolOverlays.pop()
+    try { map?.removeOverlay(overlay) } catch (e) { /* ignore */ }
+  }
+}
+
+const patrolPoint = (row) => {
+  const lng = Number(row?.lng ?? row?.longitude)
+  const lat = Number(row?.lat ?? row?.latitude)
+  if (!Number.isFinite(lng) || !Number.isFinite(lat)) return null
+  const normalized = normalizeCampusPoint({ lng, lat })
+  return Number.isFinite(normalized.lng) && Number.isFinite(normalized.lat) ? normalized : null
+}
+
+const drawPatrolOverlays = (patrol) => {
+  if (!map || typeof BMapGL === 'undefined') return
+  clearPatrolOverlays()
+  const missions = Array.isArray(patrol?.missions) ? patrol.missions : []
+  let running = 0
+  let events = 0
+  let latest = ''
+  const overlayMissions = missions
+    .slice()
+    .sort((a, b) => {
+      const aActive = ['RUNNING', 'RETURNING', 'MANUAL_CONTROL'].includes(String(a?.state || '').toUpperCase())
+      const bActive = ['RUNNING', 'RETURNING', 'MANUAL_CONTROL'].includes(String(b?.state || '').toUpperCase())
+      if (aActive !== bActive) return aActive ? -1 : 1
+      return new Date(b?.update_time || b?.updateTime || b?.create_time || 0).getTime()
+        - new Date(a?.update_time || a?.updateTime || a?.create_time || 0).getTime()
+    })
+    .slice(0, 3)
+  missions.forEach((mission) => {
+    const state = String(mission.state || '').toUpperCase()
+    if (['RUNNING', 'RETURNING', 'MANUAL_CONTROL'].includes(state)) running += 1
+    events += Array.isArray(mission.events) ? mission.events.length : 0
+  })
+  overlayMissions.forEach((mission) => {
+    const state = String(mission.state || '').toUpperCase()
+    const missionEvents = Array.isArray(mission.events) ? mission.events : []
+    const telemetry = patrolPoint(mission.latestTelemetry)
+    if (telemetry) latest = `${telemetry.lng.toFixed(5)}, ${telemetry.lat.toFixed(5)}`
+
+    const waypoints = (Array.isArray(mission.waypoints) ? mission.waypoints : [])
+      .map(patrolPoint).filter(Boolean)
+    if (waypoints.length >= 2) {
+      const route = new BMapGL.Polyline(waypoints.map(p => new BMapGL.Point(p.lng, p.lat)), {
+        strokeColor: state === 'RUNNING' ? '#ffd166' : '#55b8ff',
+        strokeWeight: 4,
+        strokeOpacity: 0.9,
+        strokeStyle: state === 'PAUSED' ? 'dashed' : 'solid'
+      })
+      map.addOverlay(route)
+      patrolOverlays.push(route)
+    }
+
+    const trail = (Array.isArray(mission.trail) ? mission.trail : [])
+      .map(patrolPoint).filter(Boolean).reverse()
+    if (trail.length >= 2) {
+      const line = new BMapGL.Polyline(trail.map(p => new BMapGL.Point(p.lng, p.lat)), {
+        strokeColor: '#73e6c2', strokeWeight: 3, strokeOpacity: 0.8
+      })
+      map.addOverlay(line)
+      patrolOverlays.push(line)
+    }
+
+    if (telemetry) {
+      const point = new BMapGL.Point(telemetry.lng, telemetry.lat)
+      const marker = new BMapGL.Marker(point)
+      const telemetryLabel = new BMapGL.Label(`无人机 ${mission.mission_code || mission.mission_id} · ${state}`, {
+        offset: new BMapGL.Size(16, -12),
+      })
+      telemetryLabel.setStyle({
+        color: '#eaf7ff',
+        background: 'rgba(8,25,42,.94)',
+        border: '1px solid #55b8ff',
+        padding: '4px 7px',
+        borderRadius: '3px',
+        fontSize: '11px',
+        cursor: 'pointer',
+        zIndex: 1100,
+        pointerEvents: 'auto'
+      })
+      if (typeof telemetryLabel.setZIndex === 'function') telemetryLabel.setZIndex(1200)
+      marker.setLabel(telemetryLabel)
+      marker.addEventListener('click', () => {
+        map.openInfoWindow(new BMapGL.InfoWindow(`<div style="padding:10px;min-width:210px"><strong>无人机巡检</strong><p>任务：${mission.mission_code || mission.mission_id}</p><p>状态：${state}</p><p>电量：${mission.battery_current ?? telemetry.battery ?? '--'}%</p><p>航线版本：${mission.plan_version ?? '--'}</p></div>`), point)
+      })
+      map.addOverlay(marker)
+      patrolOverlays.push(marker)
+    }
+
+    missionEvents.forEach((event, eventIndex) => {
+      const p = patrolPoint(event)
+      if (!p) return
+      const point = new BMapGL.Point(p.lng, p.lat)
+      const marker = new BMapGL.Marker(point)
+      const openEventDetail = () => {
+        const eventId = event.event_id ?? event.eventId
+        if (!eventId) {
+          ElMessage.warning('该巡检事件缺少事件编号，暂时无法打开治理详情')
+          return
+        }
+        router.push({ path: '/ai-governance/workbench', query: { eventId: String(eventId) } })
+      }
+      const eventLabel = new BMapGL.Label(`AI ${event.event_type || '事件'}`, {
+        position: point,
+        offset: new BMapGL.Size(-300, -10),
+      })
+      eventLabel.setStyle({
+        color: '#fff',
+        background: 'rgba(170,53,53,.95)',
+        border: '1px solid rgba(255,144,144,.85)',
+        padding: '3px 6px',
+        borderRadius: '3px',
+        fontSize: '10px',
+        cursor: 'pointer',
+        zIndex: 1200,
+        pointerEvents: 'auto'
+      })
+      if (typeof eventLabel.setZIndex === 'function') eventLabel.setZIndex(1300 + eventIndex)
+      eventLabel.addEventListener('click', openEventDetail)
+      marker.addEventListener('click', openEventDetail)
+      map.addOverlay(marker)
+      map.addOverlay(eventLabel)
+      patrolOverlays.push(marker, eventLabel)
+    })
+  })
+  patrolSummary.value = {
+    visible: missions.length > 0,
+    running,
+    events,
+    latest,
+    eventList: missions
+      .flatMap((mission) => Array.isArray(mission.events) ? mission.events : [])
+      .filter((event) => event && (event.event_id || event.eventId))
+      .sort((a, b) => new Date(b.occurred_at || b.create_time || 0).getTime() - new Date(a.occurred_at || a.create_time || 0).getTime())
+      .slice(0, 3)
+  }
+}
+
+const openPatrolGovernance = () => {
+  router.push({ path: '/ai-governance/workbench' })
+}
+
+const openPatrolEvent = (event) => {
+  const eventId = event?.event_id ?? event?.eventId
+  if (eventId) router.push({ path: '/ai-governance/workbench', query: { eventId: String(eventId) } })
+}
+
+const openPatrolDialog = () => {
+  patrolDialogVisible.value = true
+}
+
+const createPatrolMissionFromDashboard = async () => {
+  if (!patrolForm.goal.trim()) {
+    ElMessage.warning('请填写巡检目标')
+    return
+  }
+  patrolCreating.value = true
+  try {
+    const created = await axios.post(`${API_BASE_URL}/patrol/missions`, {
+      goal: patrolForm.goal.trim(),
+      areaName: patrolForm.areaName.trim() || ACTIVE_CAMPUS.name,
+      centerLng: DEMO_POINT_BASE_LNG,
+      centerLat: DEMO_POINT_BASE_LAT,
+      durationLimitSec: Number(patrolForm.durationLimitSec) || 720
+    })
+    const missionId = created?.data?.data?.mission_id || created?.data?.data?.missionId
+    if (!missionId) throw new Error('创建任务未返回任务编号')
+    await axios.post(`${API_BASE_URL}/patrol/missions/${missionId}/plan`)
+    if (patrolForm.autoStart) await axios.post(`${API_BASE_URL}/patrol/missions/${missionId}/start`)
+    patrolDialogVisible.value = false
+    ElMessage.success(patrolForm.autoStart ? '巡检任务已启动，航线已叠加到原地图' : '巡检任务已规划，可在巡检治理中启动')
+    await fetchMapData()
+  } catch (error) {
+    console.error('创建巡检任务失败', error)
+    ElMessage.error(error?.response?.data?.message || error?.message || '创建巡检任务失败')
+  } finally {
+    patrolCreating.value = false
+  }
+}
+
 const clearMapDataOverlays = () => {
   while (mapDataOverlays.length) {
     const overlay = mapDataOverlays.pop()
@@ -1934,6 +2175,7 @@ const updateMapMarkers = (mapData) => {
       mapDataOverlays.push(markerObj)
     })
   }
+  drawPatrolOverlays(mapData.patrol)
   drawGeofencePolygons()
   fetchAllLocations()
 }
@@ -2126,37 +2368,15 @@ const keep3DMapView = () => {
   }
 }
 
-const loadBaiduMapAPI = () => {
-  if (typeof BMapGL !== 'undefined') { initMap(); return }
-  const existing = document.querySelector('script[src*="api.map.baidu.com/api?type=webgl"]')
-  if (existing) {
-    let retries = 0
-    const timer = setInterval(() => {
-      retries += 1
-      if (typeof BMapGL !== 'undefined') {
-        clearInterval(timer)
-        initMap()
-      } else if (retries > 160) {
-        clearInterval(timer)
-        ElMessage.error('百度地图底图加载超时，请检查网络或 AK 白名单')
-      }
-    }, 50)
-    return
-  }
-  const script = document.createElement('script')
-  script.type = 'text/javascript'
-  script.src = 'https://api.map.baidu.com/api?type=webgl&v=1.0&ak=SUBe4C3SHSL9Uyd9P4xgq6GMdaZF2Irj&callback=baiduMapInit'
-  window.baiduMapInit = () => {
-    if (typeof BMapGL === 'undefined') {
-      ElMessage.error('百度地图底图脚本未就绪，请刷新页面')
-      return
-    }
+const loadBaiduMapAPI = async () => {
+  try {
+    await loadBaiduMapGL()
+    await nextTick()
     initMap()
+  } catch (error) {
+    console.error('百度地图底图加载失败', error)
+    ElMessage.error('百度地图底图加载失败，请检查网络或 AK 白名单')
   }
-  script.onerror = () => {
-    ElMessage.error('百度地图底图脚本加载失败，请检查网络或 AK 白名单')
-  }
-  document.head.appendChild(script)
 }
 
 const initMap = () => {
@@ -3761,12 +3981,12 @@ const saveThresholds = () => {
 }
 
 // ---------- 定时器 ----------
-let dashboardTimer = null, violationTimer = null, mapTimer = null, fenceTimer = null
+let dashboardTimer = null, violationTimer = null, mapTimer = null, fenceTimer = null, clockTimer = null
 
 const startTimers = () => {
   dashboardTimer = setInterval(fetchDashboardData, 30000)
   violationTimer = setInterval(fetchViolationAlerts, 30000)
-  mapTimer = setInterval(fetchMapData, 60000)
+  mapTimer = setInterval(fetchMapData, 10000)
   fenceTimer = setInterval(fetchFenceZones, 60000)
 }
 
@@ -3781,7 +4001,7 @@ const getHt = () => {
 onMounted(() => {
   window.__evTrackReplay = handleTrackReplayAction
   updateTime()
-  setInterval(updateTime, 1000)
+  clockTimer = setInterval(updateTime, 1000)
   getHt()
   window.addEventListener('resize', getHt)
   loadBaiduMapAPI()
@@ -3800,6 +4020,7 @@ onUnmounted(() => {
   clearInterval(violationTimer)
   clearInterval(mapTimer)
   clearInterval(fenceTimer)
+  clearInterval(clockTimer)
   if (markerRefreshTimer) clearInterval(markerRefreshTimer)
   stopSimLocationStream()
   stopDemoPointStream({ silent: true })
@@ -3819,6 +4040,7 @@ onUnmounted(() => {
   }
   clearMapDataOverlays()
   clearGeofenceOverlays()
+  clearPatrolOverlays()
   window.removeEventListener('resize', getHt)
   trendChart?.dispose()
   distChartAnalysis?.dispose()
@@ -4022,6 +4244,157 @@ a { text-decoration: none; }
   box-shadow: 0 0 18px rgba(255,209,102,0.18);
   backdrop-filter: blur(6px);
   pointer-events: auto;
+}
+
+.patrol-overlay-summary {
+  position: absolute;
+  left: 16px;
+  top: 16px;
+  z-index: 1500;
+  min-width: 250px;
+  padding: 10px 12px;
+  color: #eaf7ff;
+  background: rgba(5, 20, 34, .9);
+  border: 1px solid rgba(85, 184, 255, .65);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .22);
+  font-size: 12px;
+}
+
+.patrol-launch-button {
+  position: absolute;
+  top: 12px;
+  right: 16px;
+  z-index: 1400;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 12px;
+  border: 1px solid rgba(139, 211, 255, .7);
+  color: #eaf7ff;
+  background: rgba(5, 20, 34, .88);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .22);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.patrol-launch-button:hover {
+  background: rgba(16, 56, 82, .94);
+}
+
+.patrol-launch-button__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #55b8ff;
+  box-shadow: 0 0 8px #55b8ff;
+}
+
+.patrol-dialog-form {
+  display: grid;
+  gap: 14px;
+}
+
+.patrol-dialog-form label {
+  display: grid;
+  gap: 6px;
+  color: #465463;
+  font-size: 13px;
+}
+
+.patrol-dialog-form input[type='text'],
+.patrol-dialog-form input[type='number'],
+.patrol-dialog-form input:not([type]) {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #d8e0e8;
+  border-radius: 4px;
+  color: #263849;
+  background: #fff;
+}
+
+.patrol-dialog-check {
+  display: flex !important;
+  grid-template-columns: none;
+  align-items: center;
+  gap: 8px !important;
+}
+
+.patrol-overlay-summary__head,
+.patrol-overlay-summary__body {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.patrol-overlay-summary__head {
+  padding-bottom: 7px;
+  border-bottom: 1px solid rgba(139, 211, 255, .22);
+}
+
+.patrol-overlay-summary__head span {
+  color: #8bd3ff;
+  font-weight: 700;
+}
+
+.patrol-overlay-summary__head button {
+  padding: 3px 7px;
+  border: 1px solid rgba(139, 211, 255, .5);
+  color: #dff5ff;
+  background: transparent;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.patrol-overlay-summary__body {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  padding-top: 7px;
+  color: #b5cbd8;
+}
+
+.patrol-overlay-summary__body b {
+  color: #ffd166;
+}
+
+.patrol-overlay-summary__events {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.patrol-overlay-summary__events button {
+  min-width: 0;
+  padding: 5px 6px;
+  border: 1px solid rgba(255, 144, 144, .5);
+  color: #fff;
+  background: rgba(116, 39, 49, .72);
+  cursor: pointer;
+  text-align: left;
+}
+
+.patrol-overlay-summary__events button:hover {
+  background: rgba(170, 53, 53, .92);
+}
+
+.patrol-overlay-summary__events span,
+.patrol-overlay-summary__events small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.patrol-overlay-summary__events span {
+  color: #fff;
+  font-size: 10px;
+}
+
+.patrol-overlay-summary__events small {
+  margin-top: 2px;
+  color: #ffd7d7;
+  font-size: 9px;
 }
 .track-route-float-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: #ffe8a3; font-size: 0.9rem; font-weight: 700; }
 .track-route-float-head b { color: #27d4ff; font-size: 0.82rem; }

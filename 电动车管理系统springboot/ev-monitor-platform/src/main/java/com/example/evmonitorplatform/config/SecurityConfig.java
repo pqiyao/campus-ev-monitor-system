@@ -66,6 +66,8 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/ai/events").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/ai/evidence/upload").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/ai/devices/cameras").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/patrol/missions/*/telemetry").permitAll()
                         .requestMatchers(PUBLIC_PATHS).permitAll()
                         .requestMatchers("/api/ai/**").hasRole("ADMIN")
                         .anyRequest().authenticated()

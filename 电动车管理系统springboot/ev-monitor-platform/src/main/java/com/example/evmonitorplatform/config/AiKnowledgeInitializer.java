@@ -23,7 +23,7 @@ public class AiKnowledgeInitializer implements ApplicationRunner {
         if (!schema.ensureTablesExist()) return;
         Integer count = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM policy_document", Integer.class);
         if (count != null && count > 0) return;
-        String title = "校园电动车安全治理规则（平台演示版）";
+        String title = "校园电动车安全治理规则";
         String content = """
                 第一条 驾乘校园电动车应正确佩戴安全头盔，保持车牌清晰，不得遮挡或污损。
                 第二条 校园道路禁止违规载人、超速行驶；进入教学核心区等禁行区域须遵守围栏和现场标识。
@@ -33,7 +33,7 @@ public class AiKnowledgeInitializer implements ApplicationRunner {
                 第六条 用户可在规定期限内对违规记录提出申诉，并提交图片、视频、轨迹或其他证明材料。
                 第七条 对疑似盗抢、异常移动事件，应优先通知车主和安保人员，不直接作为交通违规扣分依据。
                 """;
-        jdbcTemplate.update("INSERT INTO policy_document (title, category, version, effective_date, content, source, status) VALUES (?, 'CAMPUS_RULE', 'DEMO-1.0', ?, ?, '平台内置演示规则', 'ACTIVE')",
+        jdbcTemplate.update("INSERT INTO policy_document (title, category, version, effective_date, content, source, status) VALUES (?, 'CAMPUS_RULE', '1.0', ?, ?, '平台内置治理规则', 'ACTIVE')",
                 title, Date.valueOf(LocalDate.now()), content);
         Long documentId = jdbcTemplate.queryForObject("SELECT document_id FROM policy_document WHERE title=? ORDER BY document_id DESC LIMIT 1", Long.class, title);
         List<String[]> chunks = List.of(

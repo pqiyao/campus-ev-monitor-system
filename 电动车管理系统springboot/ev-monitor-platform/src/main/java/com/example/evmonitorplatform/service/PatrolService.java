@@ -12,5 +12,9 @@ public interface PatrolService {
     Map<String, Object> pauseMission(Long missionId, Integer operatorUserId);
     Map<String, Object> replanMission(Long missionId, String reason, Integer operatorUserId);
     Map<String, Object> appendTelemetry(Long missionId, Map<String, Object> telemetry);
+    Map<String, Object> injectFault(Long missionId, String faultType, Map<String, Object> parameters, Integer operatorUserId);
+    Map<String, Object> clearFault(Long missionId, Integer operatorUserId);
+    Map<String, Object> attachEvent(Long missionId, Map<String, Object> request, Integer operatorUserId);
     Map<String, Object> generateReport(Long missionId, Integer operatorUserId);
+    Map<String, Object> getReport(Long missionId);
 }

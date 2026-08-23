@@ -354,6 +354,7 @@ import { Refresh, Check, Plus } from '@element-plus/icons-vue'
 import axios from 'axios'
 import request from '@/utils/system/request'
 import { ACTIVE_CAMPUS } from '@/config/campusMap'
+import { loadBaiduMapGL } from '@/utils/map/baiduMap'
 import {
   getGeofenceList,
   getGeofenceEnabled,
@@ -807,32 +808,9 @@ const initFenceMap = () => {
   })
 }
 
-const BAIDU_MAP_AK = 'SUBe4C3SHSL9Uyd9P4xgq6GMdaZF2Irj'
-
-const loadBaiduMapScript = () => {
-  if (typeof BMapGL !== 'undefined') {
-    initFenceMap()
-    return
-  }
-  const existing = document.querySelector('script[src*="api.map.baidu.com/api?type=webgl"]')
-  if (existing) {
-    let n = 0
-    const t = setInterval(() => {
-      n += 1
-      if (typeof BMapGL !== 'undefined') {
-        clearInterval(t)
-        initFenceMap()
-      } else if (n > 200) {
-        clearInterval(t)
-        ElMessage.error('百度地图 GL 脚本长时间未就绪，请刷新页面')
-      }
-    }, 50)
-    return
-  }
-  window.initSiteFenceBaiduMap = () => initFenceMap()
-  const script = document.createElement('script')
-  script.src = `https://api.map.baidu.com/api?type=webgl&v=1.0&ak=${BAIDU_MAP_AK}&callback=initSiteFenceBaiduMap`
-  document.head.appendChild(script)
+const loadBaiduMapScript = async () => {
+  try { await loadBaiduMapGL(); initFenceMap() }
+  catch { ElMessage.error('百度地图 GL 加载失败，请检查网络或 AK 白名单') }
 }
 
 const drawAllFences = () => {
