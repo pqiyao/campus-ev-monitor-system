@@ -217,6 +217,26 @@ public class AiGovernanceSchema implements ApplicationRunner {
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='跨设备与重复事件关联'
             """,
             """
+            CREATE TABLE IF NOT EXISTS ai_event_fusion (
+                fusion_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                event_id BIGINT NOT NULL,
+                source_count INT NOT NULL DEFAULT 1,
+                source_types VARCHAR(256) NOT NULL,
+                related_event_count INT NOT NULL DEFAULT 0,
+                spatial_score DECIMAL(5,4) NOT NULL DEFAULT 0,
+                temporal_score DECIMAL(5,4) NOT NULL DEFAULT 0,
+                identity_score DECIMAL(5,4) NOT NULL DEFAULT 0,
+                evidence_score DECIMAL(5,4) NOT NULL DEFAULT 0,
+                fused_risk_score DECIMAL(5,4) NOT NULL DEFAULT 0,
+                fused_risk_level VARCHAR(16) NOT NULL DEFAULT 'LOW',
+                explanation VARCHAR(1200) NULL,
+                create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY uk_ai_event_fusion_event (event_id),
+                KEY idx_ai_event_fusion_risk (fused_risk_level, update_time)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='多源时空融合摘要'
+            """,
+            """
             CREATE TABLE IF NOT EXISTS ai_assistant_session (
                 session_id VARCHAR(48) PRIMARY KEY,
                 user_id INT NOT NULL,

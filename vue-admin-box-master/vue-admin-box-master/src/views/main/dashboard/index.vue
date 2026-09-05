@@ -261,8 +261,8 @@
                   type="button"
                   @click="openPatrolEvent(event)"
                 >
-                  <span>{{ event.event_type || '巡检事件' }}</span>
-                  <small>{{ event.location || event.area_name || '地图事件' }}</small>
+                  <span>{{ event.event_type || '巡检事件' }} · {{ event.fused_risk_level || event.risk_level || '待研判' }}</span>
+                  <small>{{ event.location || event.area_name || '地图事件' }} · {{ event.source_count || 1 }}源 / {{ event.related_event_count || 0 }}条证据</small>
                 </button>
               </div>
             </div>
@@ -2159,16 +2159,22 @@ const updateMapMarkers = (mapData) => {
       let icon = null
       if (marker.type === 'camera') icon = new BMapGL.Icon('/img/camera_marker.png', new BMapGL.Size(32, 32))
       else if (marker.type === 'violation') icon = new BMapGL.Icon('/img/violation_marker.png', new BMapGL.Size(32, 32))
+      else if (marker.type === 'ai-event') icon = new BMapGL.Icon('/img/violation_marker.png', new BMapGL.Size(28, 28))
       const markerObj = new BMapGL.Marker(point, { icon })
       const infoHtml = `
         <div style="padding:10px; min-width:200px;">
           <h4 style="margin:0 0 10px; color:#4b8df8;">${marker.title}</h4>
-          <p><strong>类型：</strong>${marker.type === 'camera' ? '摄像头' : '违规点'}</p>
+          <p><strong>类型：</strong>${marker.type === 'camera' ? '摄像头' : marker.type === 'ai-event' ? 'AI事件' : '违规点'}</p>
+          ${marker.type === 'ai-event' ? `<p><strong>来源：</strong>${marker.sourceType || '--'} · ${marker.sourceCount || 1}源</p><p><strong>融合风险：</strong>${marker.riskLevel || '--'} · ${marker.relatedEventCount || 0}条证据</p>` : ''}
           <p><strong>状态：</strong>${marker.status || marker.state}</p>
           ${marker.description ? `<p><strong>描述：</strong>${marker.description}</p>` : ''}
         </div>
       `
       markerObj.addEventListener('click', () => {
+        if (marker.type === 'ai-event' && marker.eventId) {
+          router.push({ path: '/ai-governance/workbench', query: { eventId: String(marker.eventId) } })
+          return
+        }
         map.openInfoWindow(new BMapGL.InfoWindow(infoHtml), point)
       })
       map.addOverlay(markerObj)

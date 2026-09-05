@@ -24,11 +24,13 @@ import org.springframework.util.StringUtils;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 
 @Slf4j
@@ -120,26 +122,60 @@ public class AiIntelligenceServiceImpl implements AiIntelligenceService {
         Map<String, Object> event = rows.get(0);
         Object occurredAt = event.get("occurred_at");
         List<Map<String, Object>> candidates = jdbcTemplate.queryForList("""
-                SELECT event_id, event_code, event_type, device_id, occurred_at, location_name, vehicle_id,
-                       user_id, license_plate, identity_confidence, detection_confidence
+                SELECT event_id, event_code, event_type, source_type, device_id, occurred_at, location_name,
+                       longitude, latitude, vehicle_id, user_id, license_plate, identity_confidence, detection_confidence
                 FROM ai_event
                 WHERE event_id<>? AND occurred_at BETWEEN DATE_SUB(?, INTERVAL 60 MINUTE) AND DATE_ADD(?, INTERVAL 60 MINUTE)
-                  AND ((? IS NOT NULL AND vehicle_id=?) OR (? IS NOT NULL AND license_plate=?))
-                ORDER BY occurred_at DESC LIMIT 30
-                """, eventId, occurredAt, occurredAt, event.get("vehicle_id"), event.get("vehicle_id"),
-                event.get("license_plate"), event.get("license_plate"));
+                ORDER BY occurred_at DESC LIMIT 200
+                """, eventId, occurredAt, occurredAt);
+        Set<String> sourceTypes = new HashSet<>();
+        sourceTypes.add(text(event.get("source_type"), "UNKNOWN"));
+        int relatedCount = 0;
+        double bestSpatial = 0D, bestTemporal = 0D, bestIdentity = 0D, bestEvidence = decimal(event.get("detection_confidence"));
         for (Map<String, Object> candidate : candidates) {
+            double distance = distanceMeters(event, candidate);
+            double minutes = timeDistanceMinutes(event.get("occurred_at"), candidate.get("occurred_at"));
+            double spatial = distance < 0 ? 0D : Math.max(0D, 1D - distance / 120D);
+            double temporal = Math.max(0D, 1D - minutes / 60D);
+            double identity = sameIdentity(event, candidate) ? identityConfidence(event, candidate) : 0D;
+            boolean sameSource = Objects.equals(event.get("source_type"), candidate.get("source_type"));
+            boolean eligible = identity >= 0.80D || (distance >= 0D && distance <= 120D && minutes <= 10D);
+            if (!eligible) continue;
+            relatedCount++;
+            sourceTypes.add(text(candidate.get("source_type"), "UNKNOWN"));
+            bestSpatial = Math.max(bestSpatial, spatial);
+            bestTemporal = Math.max(bestTemporal, temporal);
+            bestIdentity = Math.max(bestIdentity, identity);
+            bestEvidence = Math.max(bestEvidence, decimal(candidate.get("detection_confidence")));
             long source = Math.min(eventId, number(candidate.get("event_id")).longValue());
             long target = Math.max(eventId, number(candidate.get("event_id")).longValue());
-            boolean crossCamera = !Objects.equals(event.get("device_id"), candidate.get("device_id"));
-            String type = crossCamera ? "CROSS_CAMERA" : "REPEAT_BEHAVIOR";
-            double confidence = Objects.equals(event.get("vehicle_id"), candidate.get("vehicle_id")) ? 0.96D : 0.90D;
-            String explanation = crossCamera
-                    ? "同一车辆在60分钟内由不同感知设备连续捕获"
-                    : "同一车辆在60分钟内出现重复治理事件";
+            boolean crossSource = !sameSource;
+            String type = crossSource ? "CROSS_SOURCE" : (identity >= 0.80D ? "REPEAT_BEHAVIOR" : "SPATIOTEMPORAL");
+            double confidence = clamp(0.45D * spatial + 0.25D * temporal + 0.30D * identity);
+            String explanation = identity >= 0.80D
+                    ? "同一车辆/车牌在时间窗口内被多源感知设备捕获"
+                    : String.format(Locale.ROOT, "不同来源在%.0f米、%.1f分钟内对同一区域形成时空证据", distance, minutes);
             jdbcTemplate.update("INSERT IGNORE INTO ai_event_relation (source_event_id, target_event_id, relation_type, confidence, explanation) VALUES (?, ?, ?, ?, ?)",
                     source, target, type, confidence, explanation);
         }
+        double sourceBonus = sourceTypes.size() > 1 ? 0.10D : 0D;
+        double fusedRisk = clamp(0.35D * bestEvidence + 0.25D * bestSpatial + 0.15D * bestTemporal + 0.15D * bestIdentity + sourceBonus);
+        String fusedLevel = fusedRisk >= 0.78D ? "HIGH" : fusedRisk >= 0.50D ? "MEDIUM" : "LOW";
+        String explanation = relatedCount == 0
+                ? "当前事件暂未找到时间和空间均满足阈值的其他来源证据"
+                : String.format(Locale.ROOT, "融合%d类来源、%d条关联证据；空间%.2f，时间%.2f，身份%.2f，检测%.2f",
+                sourceTypes.size(), relatedCount, bestSpatial, bestTemporal, bestIdentity, bestEvidence);
+        jdbcTemplate.update("""
+                INSERT INTO ai_event_fusion (event_id, source_count, source_types, related_event_count, spatial_score,
+                    temporal_score, identity_score, evidence_score, fused_risk_score, fused_risk_level, explanation)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE source_count=VALUES(source_count), source_types=VALUES(source_types),
+                    related_event_count=VALUES(related_event_count), spatial_score=VALUES(spatial_score),
+                    temporal_score=VALUES(temporal_score), identity_score=VALUES(identity_score),
+                    evidence_score=VALUES(evidence_score), fused_risk_score=VALUES(fused_risk_score),
+                    fused_risk_level=VALUES(fused_risk_level), explanation=VALUES(explanation)
+                """, eventId, sourceTypes.size(), String.join(",", sourceTypes), relatedCount, bestSpatial,
+                bestTemporal, bestIdentity, bestEvidence, fusedRisk, fusedLevel, explanation);
         return relationsForEvent(eventId);
     }
 
@@ -328,6 +364,7 @@ public class AiIntelligenceServiceImpl implements AiIntelligenceService {
         if (rows.isEmpty()) throw new BusinessException("上下文事件不存在");
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("event", rows.get(0)); result.put("relations", relationsForEvent(eventId));
+        result.put("fusion", fusionForEvent(eventId));
         result.put("timeline", jdbcTemplate.queryForList("SELECT stage, title, detail, actor_type, create_time FROM event_timeline WHERE event_id=? ORDER BY create_time", eventId));
         return result;
     }
@@ -340,6 +377,53 @@ public class AiIntelligenceServiceImpl implements AiIntelligenceService {
                 WHERE r.source_event_id=? OR r.target_event_id=? ORDER BY r.create_time DESC
                 """, eventId, eventId);
     }
+
+    private Map<String, Object> fusionForEvent(Long eventId) {
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList("SELECT * FROM ai_event_fusion WHERE event_id=?", eventId);
+        return rows.isEmpty() ? Map.of("source_count", 1, "related_event_count", 0, "fused_risk_level", "LOW", "explanation", "尚未形成跨源融合证据") : rows.get(0);
+    }
+
+    private boolean sameIdentity(Map<String, Object> first, Map<String, Object> second) {
+        Object firstVehicle = first.get("vehicle_id");
+        Object secondVehicle = second.get("vehicle_id");
+        if (firstVehicle != null && secondVehicle != null && Objects.equals(String.valueOf(firstVehicle), String.valueOf(secondVehicle))) return true;
+        String firstPlate = text(first.get("license_plate"), "");
+        String secondPlate = text(second.get("license_plate"), "");
+        return !firstPlate.isBlank() && firstPlate.equalsIgnoreCase(secondPlate);
+    }
+
+    private double identityConfidence(Map<String, Object> first, Map<String, Object> second) {
+        double confidence = sameIdentity(first, second) ? 0.82D : 0D;
+        confidence = Math.max(confidence, decimal(first.get("identity_confidence")));
+        confidence = Math.max(confidence, decimal(second.get("identity_confidence")));
+        return clamp(confidence);
+    }
+
+    private double distanceMeters(Map<String, Object> first, Map<String, Object> second) {
+        if (first.get("longitude") == null || first.get("latitude") == null || second.get("longitude") == null || second.get("latitude") == null) return -1D;
+        double lat1 = decimal(first.get("latitude")), lat2 = decimal(second.get("latitude"));
+        double dLat = Math.toRadians(lat2 - lat1);
+        double dLng = Math.toRadians(decimal(second.get("longitude")) - decimal(first.get("longitude")));
+        double a = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+        return 6371000D * 2D * Math.atan2(Math.sqrt(a), Math.sqrt(Math.max(0D, 1D - a)));
+    }
+
+    private double timeDistanceMinutes(Object first, Object second) {
+        try {
+            LocalDateTime a = LocalDateTime.parse(String.valueOf(first).replace(' ', 'T'));
+            LocalDateTime b = LocalDateTime.parse(String.valueOf(second).replace(' ', 'T'));
+            return Math.abs(Duration.between(a, b).toSeconds()) / 60D;
+        } catch (Exception ex) { return 999D; }
+    }
+
+    private double decimal(Object value) {
+        try { return value == null ? 0D : Double.parseDouble(String.valueOf(value)); }
+        catch (Exception ex) { return 0D; }
+    }
+
+    private double clamp(double value) { return Math.max(0D, Math.min(1D, value)); }
+
+    private String text(Object value, String fallback) { return value == null || String.valueOf(value).isBlank() ? fallback : String.valueOf(value); }
 
     private List<Map<String, Object>> searchPolicyChunks(String query, int limit) {
         List<String> terms = new ArrayList<>();

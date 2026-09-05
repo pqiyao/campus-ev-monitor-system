@@ -128,6 +128,21 @@
               </div>
             </div>
 
+            <div class="fusion-soft" v-if="detail.fusion">
+              <div class="section-head">
+                <strong>多源时空融合</strong>
+                <span>{{ detail.fusion.source_count || 1 }} 类来源 · {{ detail.fusion.related_event_count || 0 }} 条关联证据</span>
+              </div>
+              <div class="fusion-score-row">
+                <span class="fusion-risk" :class="String(detail.fusion.fused_risk_level || '').toLowerCase()">
+                  {{ riskLabel(detail.fusion.fused_risk_level) }}
+                </span>
+                <span>来源：{{ detail.fusion.source_types || detail.source_type || '—' }}</span>
+                <strong>{{ percent(detail.fusion.fused_risk_score) }}</strong>
+              </div>
+              <p>{{ detail.fusion.explanation || '已完成统一事件接入，等待更多来源证据。' }}</p>
+            </div>
+
             <div class="closure-strip" :class="{ completed: detail.violation_id }">
               <div>
                 <span>正式违规状态</span>
@@ -878,6 +893,53 @@ onMounted(refreshAll)
   font-style: normal;
   color: #526271;
   font-size: 12px;
+}
+
+.fusion-soft {
+  margin-top: 14px;
+  padding: 14px 16px;
+  border: 1px solid rgba(83, 120, 165, .18);
+  border-radius: 10px;
+  background: rgba(245, 249, 253, .72);
+}
+
+.fusion-score-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 10px 0 6px;
+  color: #5f6f82;
+  font-size: 12px;
+}
+
+.fusion-score-row strong {
+  margin-left: auto;
+  color: #24364d;
+}
+
+.fusion-risk {
+  padding: 3px 8px;
+  border-radius: 999px;
+  color: #47708f;
+  background: #e7f1f7;
+}
+
+.fusion-risk.high,
+.fusion-risk.critical {
+  color: #a34848;
+  background: #fbeaea;
+}
+
+.fusion-risk.medium {
+  color: #946921;
+  background: #fff4dc;
+}
+
+.fusion-soft p {
+  margin: 0;
+  color: #6b7888;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .analysis-soft {

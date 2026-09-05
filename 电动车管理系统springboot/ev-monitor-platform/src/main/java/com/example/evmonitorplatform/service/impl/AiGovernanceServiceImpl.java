@@ -178,6 +178,10 @@ public class AiGovernanceServiceImpl implements AiGovernanceService {
         result.put("identityMatches", jdbcTemplate.queryForList("SELECT * FROM ai_identity_match WHERE event_id=? ORDER BY create_time DESC", eventId));
         result.put("timeline", jdbcTemplate.queryForList("SELECT * FROM event_timeline WHERE event_id=? ORDER BY create_time", eventId));
         result.put("relations", jdbcTemplate.queryForList("SELECT * FROM ai_event_relation WHERE source_event_id=? OR target_event_id=? ORDER BY create_time DESC", eventId, eventId));
+        List<Map<String, Object>> fusionRows = jdbcTemplate.queryForList("SELECT * FROM ai_event_fusion WHERE event_id=?", eventId);
+        result.put("fusion", fusionRows.isEmpty()
+                ? Map.of("source_count", 1, "related_event_count", 0, "fused_risk_level", "LOW", "explanation", "尚未形成跨源融合证据")
+                : fusionRows.get(0));
         if (result.get("incident_id") != null) result.put("tasks", jdbcTemplate.queryForList("SELECT * FROM workflow_task WHERE incident_id=? ORDER BY create_time DESC", result.get("incident_id")));
         return result;
     }

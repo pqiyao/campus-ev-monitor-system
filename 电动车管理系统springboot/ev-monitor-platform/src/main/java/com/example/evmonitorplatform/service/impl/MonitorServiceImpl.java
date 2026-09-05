@@ -244,6 +244,36 @@ public class MonitorServiceImpl implements MonitorService {
             log.warn("查询违规坐标失败", e);
         }
 
+        // 统一 AI 事件图层：摄像头、定位、围栏、人工和其他设备事件都回到原地图。
+        try {
+            jdbcTemplate.queryForList(
+                    "SELECT e.event_id, e.event_type, e.source_type, e.status, e.risk_level, " +
+                            "e.location_name, e.longitude, e.latitude, e.occurred_at, " +
+                            "f.source_count, f.related_event_count, f.fused_risk_score, f.fused_risk_level " +
+                            "FROM ai_event e LEFT JOIN ai_event_fusion f ON f.event_id=e.event_id " +
+                            "WHERE e.longitude IS NOT NULL AND e.latitude IS NOT NULL " +
+                            "ORDER BY e.occurred_at DESC LIMIT 100"
+            ).forEach(row -> {
+                Map<String, Object> marker = new HashMap<>();
+                marker.put("eventId", row.get("event_id"));
+                marker.put("lng", row.get("longitude"));
+                marker.put("lat", row.get("latitude"));
+                marker.put("title", row.get("event_type"));
+                marker.put("type", "ai-event");
+                marker.put("sourceType", row.get("source_type"));
+                marker.put("status", row.get("status"));
+                marker.put("riskLevel", row.get("fused_risk_level") == null ? row.get("risk_level") : row.get("fused_risk_level"));
+                marker.put("sourceCount", row.get("source_count"));
+                marker.put("relatedEventCount", row.get("related_event_count"));
+                marker.put("fusedRiskScore", row.get("fused_risk_score"));
+                marker.put("locationName", row.get("location_name"));
+                marker.put("occurredAt", row.get("occurred_at"));
+                markers.add(marker);
+            });
+        } catch (Exception e) {
+            log.debug("查询 AI 事件地图图层失败: {}", e.getMessage());
+        }
+
         mapData.put("markers", markers);
         mapData.put("paths", Collections.emptyList()); // 轨迹由 WebSocket 实时推送
         // 巡检数据作为原地图数据的扩展图层返回，避免巡检模块维护第二套地图状态。
@@ -277,8 +307,10 @@ public class MonitorServiceImpl implements MonitorService {
                                 "FROM drone_telemetry WHERE mission_id=? ORDER BY recorded_at DESC LIMIT 240", missionId));
                 item.put("events", jdbcTemplate.queryForList(
                         "SELECT e.event_id, e.event_type, e.source_type, e.status, e.risk_level, " +
-                                "e.location_name, e.longitude, e.latitude, e.occurred_at, l.relation_type " +
+                                "e.location_name, e.longitude, e.latitude, e.occurred_at, l.relation_type, " +
+                                "f.source_count, f.related_event_count, f.fused_risk_score, f.fused_risk_level " +
                                 "FROM patrol_event_link l JOIN ai_event e ON e.event_id=l.event_id " +
+                                "LEFT JOIN ai_event_fusion f ON f.event_id=e.event_id " +
                         "WHERE l.mission_id=? ORDER BY e.occurred_at DESC LIMIT 20", missionId));
                 List<Map<String, Object>> latest = jdbcTemplate.queryForList(
                         "SELECT lng, lat, altitude_m, speed_mps, battery, gps_quality, payload_state, recorded_at " +

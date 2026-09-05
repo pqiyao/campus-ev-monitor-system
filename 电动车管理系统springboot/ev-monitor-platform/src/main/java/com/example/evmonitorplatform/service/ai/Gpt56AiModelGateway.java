@@ -67,7 +67,7 @@ public class Gpt56AiModelGateway implements AiModelGateway {
             if (!StringUtils.hasText(content)) {
                 throw new BusinessException("AI视觉分析服务未返回可解析的研判结果");
             }
-            AiModelDecision decision = objectMapper.readValue(stripCodeFence(content), AiModelDecision.class);
+            AiModelDecision decision = parseDecision(content);
             validateDecision(decision);
             decision.setProvider("openai-compatible");
             decision.setModelName(root.path("model").asText(properties.getModel()));
@@ -82,6 +82,16 @@ public class Gpt56AiModelGateway implements AiModelGateway {
         } catch (Exception ex) {
             throw new BusinessException("AI视觉研判失败: " + ex.getMessage());
         }
+    }
+
+    /** Normalize common provider variations before binding to the strict DTO. */
+    private AiModelDecision parseDecision(String content) throws Exception {
+        JsonNode node = objectMapper.readTree(stripCodeFence(content));
+        if (node.isObject() && node.has("observations") && node.path("observations").isTextual()) {
+            ((com.fasterxml.jackson.databind.node.ObjectNode) node)
+                    .set("observations", objectMapper.createArrayNode().add(node.path("observations").asText()));
+        }
+        return objectMapper.treeToValue(node, AiModelDecision.class);
     }
 
     private Map<String, Object> responsesPayload(AiEvent event) {
