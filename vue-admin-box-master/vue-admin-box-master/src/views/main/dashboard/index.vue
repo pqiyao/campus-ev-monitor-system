@@ -29,6 +29,7 @@
               ref="camera1"
               class="live-stream"
               :src="liveStreamUrls[0]"
+              @error="handleStreamError"
               alt=""
             />
           </div>
@@ -44,6 +45,7 @@
               ref="camera2"
               class="live-stream"
               :src="liveStreamUrls[1]"
+              @error="handleStreamError"
               alt=""
             />
           </div>
@@ -726,9 +728,18 @@ import { loadBaiduMapGL } from '@/utils/map/baiduMap'
 
 const API_BASE_URL = getApiBaseUrl()
 const router = useRouter()
+const cameraPlaceholder = '/img/camera-placeholder.jpg'
 const liveStreamUrls = HARDWARE_CAMERAS.slice(0, 2).map(camera => camera.videoUrl)
 const camera1 = ref(null)
 const camera2 = ref(null)
+
+const handleStreamError = (event) => {
+  const image = event?.target
+  if (!image || image.dataset.fallbackApplied === '1') return
+  image.dataset.fallbackApplied = '1'
+  image.src = cameraPlaceholder
+  image.alt = '暂无实时监控画面，等待摄像头接入'
+}
 
 // 兼容旧的路线/围栏坐标转换调用，统一复用当前校区配置。
 const translateCampusPoint = (point) => normalizeCampusPoint(point)
@@ -796,6 +807,7 @@ const heatmapModes = [
 const DEMO_POINT_CACHE_KEY = `ev_monitor_demo_points_${ACTIVE_CAMPUS_KEY}_v1`
 const DEMO_POINT_BASE_LNG = ACTIVE_CAMPUS.lng
 const DEMO_POINT_BASE_LAT = ACTIVE_CAMPUS.lat
+const CAMPUS_OVERVIEW_ZOOM = 16
 const buildLegacyDemoPointDefault = (index) => {
   const col = index % 5
   const row = Math.floor(index / 5)
@@ -2151,20 +2163,25 @@ const drawGeofencePolygons = () => {
 const updateMapMarkers = (mapData) => {
   if (!map || !mapData) return
   clearMapDataOverlays()
-    if (mapData.markers && mapData.markers.length > 0) {
-    mapData.markers.forEach(marker => {
+  if (mapData.markers && mapData.markers.length > 0) {
+    mapData.markers
+      .filter(marker => {
+        const type = String(marker?.type || '').toLowerCase()
+        // 该图层只显示治理结果；监控、传感器等设备点不再显示在主地图。
+        return type === 'violation' || type === 'ai-event'
+      })
+      .forEach(marker => {
       const campusPoint = normalizeCampusPoint(marker)
       if (!Number.isFinite(campusPoint.lng) || !Number.isFinite(campusPoint.lat)) return
       const point = new BMapGL.Point(campusPoint.lng, campusPoint.lat)
       let icon = null
-      if (marker.type === 'camera') icon = new BMapGL.Icon('/img/camera_marker.png', new BMapGL.Size(32, 32))
-      else if (marker.type === 'violation') icon = new BMapGL.Icon('/img/violation_marker.png', new BMapGL.Size(32, 32))
-      else if (marker.type === 'ai-event') icon = new BMapGL.Icon('/img/violation_marker.png', new BMapGL.Size(28, 28))
+      if (marker.type === 'violation') icon = new BMapGL.Icon('/img/map_parking.png', new BMapGL.Size(32, 32))
+      else if (marker.type === 'ai-event') icon = new BMapGL.Icon('/img/map_parking.png', new BMapGL.Size(28, 28))
       const markerObj = new BMapGL.Marker(point, { icon })
       const infoHtml = `
         <div style="padding:10px; min-width:200px;">
           <h4 style="margin:0 0 10px; color:#4b8df8;">${marker.title}</h4>
-          <p><strong>类型：</strong>${marker.type === 'camera' ? '摄像头' : marker.type === 'ai-event' ? 'AI事件' : '违规点'}</p>
+          <p><strong>类型：</strong>${marker.type === 'ai-event' ? 'AI事件' : '违规点'}</p>
           ${marker.type === 'ai-event' ? `<p><strong>来源：</strong>${marker.sourceType || '--'} · ${marker.sourceCount || 1}源</p><p><strong>融合风险：</strong>${marker.riskLevel || '--'} · ${marker.relatedEventCount || 0}条证据</p>` : ''}
           <p><strong>状态：</strong>${marker.status || marker.state}</p>
           ${marker.description ? `<p><strong>描述：</strong>${marker.description}</p>` : ''}
@@ -2329,6 +2346,7 @@ const getViolationTypeName = (type) => {
 // ---------- 百度地图初始化 ----------
 const CLEAN_BMAP_STYLE = [
   { featureType: 'all', elementType: 'labels', stylers: { visibility: 'off' } },
+  { featureType: 'poi', elementType: 'all', stylers: { visibility: 'off' } },
   { featureType: 'poi', elementType: 'labels', stylers: { visibility: 'off' } },
   { featureType: 'poi', elementType: 'icons', stylers: { visibility: 'off' } },
   { featureType: 'poilabel', elementType: 'all', stylers: { visibility: 'off' } },
@@ -2394,9 +2412,9 @@ const initMap = () => {
       mapContainerEl.removeEventListener('click', handleTrackRouteDomClick, true)
     }
     mapContainerEl = mapContainer
-    map = new BMapGL.Map("map_box", { minZoom: 15, maxZoom: 20, enableAutoResize: true })
+    map = new BMapGL.Map("map_box", { minZoom: 14, maxZoom: 20, enableAutoResize: true })
     const point = new BMapGL.Point(DEMO_POINT_BASE_LNG, DEMO_POINT_BASE_LAT)
-    map.centerAndZoom(point, 18)
+    map.centerAndZoom(point, CAMPUS_OVERVIEW_ZOOM)
     try {
       map.setMapType(BMAP_NORMAL_MAP)
     } catch (e) {
@@ -2466,7 +2484,11 @@ const tiltDown  = () => { if (map) map.setTilt(Math.max(map.getTilt() - 10, 45))
 const rotateLeft  = () => { if (map) map.setHeading(map.getHeading() - 15) }
 const rotateRight = () => { if (map) map.setHeading(map.getHeading() + 15) }
 const resetView = () => {
-  if (map) { keep3DMapView(); map.setHeading(0); map.setZoom(18); map.panTo(new BMapGL.Point(DEMO_POINT_BASE_LNG, DEMO_POINT_BASE_LAT)) }
+  if (map) {
+    map.setHeading(0)
+    map.centerAndZoom(new BMapGL.Point(DEMO_POINT_BASE_LNG, DEMO_POINT_BASE_LAT), CAMPUS_OVERVIEW_ZOOM)
+    keep3DMapView()
+  }
 }
 
 // ---------- 辅助方法 ----------
@@ -2476,9 +2498,7 @@ const getCameraStatusIcon = (status) => {
   return '/img/li01.png'
 }
 const getVehicleImage = (type) => {
-  if (type === 'car')        return '/img/car.png'
-  if (type === 'motorcycle') return '/img/motorcycle.png'
-  return '/img/ebike.png'
+  return '/img/vehicle-card.svg'
 }
 
 const handleAlertClick = (alert) => {
@@ -2504,7 +2524,7 @@ const locateVehicleOnMap = (vehicle) => {
   map.centerAndZoom(point, 19)
   keep3DMapView()
   const marker = new BMapGL.Marker(point, {
-    icon: new BMapGL.Icon('/img/vehicle_marker.png', new BMapGL.Size(32, 32))
+    icon: new BMapGL.Icon('/img/vehicle-marker.svg', new BMapGL.Size(32, 32))
   })
   map.addOverlay(marker)
   map.openInfoWindow(new BMapGL.InfoWindow(`
@@ -3910,7 +3930,7 @@ const locateDeviceOnMap = (dev) => {
   const point = new BMapGL.Point(dev.currentLng || DEMO_POINT_BASE_LNG, dev.currentLat || DEMO_POINT_BASE_LAT)
   map.centerAndZoom(point, 19)
   keep3DMapView()
-  const marker = new BMapGL.Marker(point, { icon: new BMapGL.Icon('/img/vehicle_marker.png', new BMapGL.Size(32, 32)) })
+  const marker = new BMapGL.Marker(point, { icon: new BMapGL.Icon('/img/vehicle-marker.svg', new BMapGL.Size(32, 32)) })
   map.addOverlay(marker)
   map.openInfoWindow(new BMapGL.InfoWindow(`<div><h4>${dev.licensePlate || '未绑定设备'}</h4><p>设备号: ${dev.deviceNumber}</p></div>`), point)
   ElMessage.success(`已定位车辆：${dev.licensePlate || dev.deviceNumber}`)

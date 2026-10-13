@@ -70,6 +70,7 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.POST, "/api/patrol/missions/*/telemetry").permitAll()
                         .requestMatchers(PUBLIC_PATHS).permitAll()
                         .requestMatchers("/api/ai/**").hasRole("ADMIN")
+                        .requestMatchers("/api/agent/**").permitAll()
                         .anyRequest().authenticated()
                 )
                 .exceptionHandling(ex -> ex

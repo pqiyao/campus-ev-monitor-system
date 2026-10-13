@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="电动车位置">
+  <path d="M32 2C17 2 7 12 7 27c0 18 25 35 25 35s25-17 25-35C57 12 47 2 32 2z" fill="#00d9ff" stroke="#fff" stroke-width="3"/>
+  <circle cx="32" cy="27" r="16" fill="#06355c"/><circle cx="23" cy="33" r="5" fill="none" stroke="#fff" stroke-width="2.5"/><circle cx="42" cy="33" r="5" fill="none" stroke="#fff" stroke-width="2.5"/>
+  <path d="M23 33l7-12h8l4 12M30 21l-5-6h-5m17 6h7" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

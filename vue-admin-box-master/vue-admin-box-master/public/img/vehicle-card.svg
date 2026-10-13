@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180" role="img" aria-label="校园电动车">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#071b3b"/><stop offset="1" stop-color="#0a5a78"/></linearGradient>
+    <linearGradient id="body" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#35e6ff"/><stop offset="1" stop-color="#1586d8"/></linearGradient>
+  </defs>
+  <rect width="320" height="180" rx="14" fill="url(#bg)"/>
+  <path d="M0 145h320M25 115h270M55 85h210" stroke="#31dff4" stroke-opacity=".13"/>
+  <circle cx="88" cy="132" r="29" fill="#06142c" stroke="#5ef5ff" stroke-width="6"/><circle cx="239" cy="132" r="29" fill="#06142c" stroke="#5ef5ff" stroke-width="6"/>
+  <circle cx="88" cy="132" r="8" fill="#9cffff"/><circle cx="239" cy="132" r="8" fill="#9cffff"/>
+  <path d="M91 128l38-57h54l20 57H91zm39-57l-15-20h-24m91 20h38l20 57m-86-57l-14-23h29" fill="none" stroke="url(#body)" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M122 91h70l-14 31h-75z" fill="url(#body)" opacity=".92"/><rect x="153" y="42" width="55" height="10" rx="5" fill="#7af8ff"/><circle cx="244" cy="69" r="9" fill="#fff69a"/>
+  <text x="18" y="28" fill="#7af8ff" font-family="Microsoft YaHei, sans-serif" font-size="14" letter-spacing="2">CAMPUS E-BIKE</text>
+</svg>

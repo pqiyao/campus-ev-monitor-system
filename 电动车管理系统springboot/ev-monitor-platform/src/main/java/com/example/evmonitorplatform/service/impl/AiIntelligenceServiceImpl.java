@@ -55,6 +55,47 @@ public class AiIntelligenceServiceImpl implements AiIntelligenceService {
         requireSchema();
         String sessionId = ensureSession(request, operatorUserId);
         saveMessage(sessionId, "user", request.getQuestion(), null, null, null);
+
+        // 离线模式保留可用的本地对话；在线模式将普通对话交给真实大模型。
+        if (isConversationQuestion(request.getQuestion()) && !"gpt".equalsIgnoreCase(properties.getMode())) {
+            String simulated = simulatedConversation(request.getQuestion(), sessionId);
+            Map<String, Object> answer = new LinkedHashMap<>();
+            answer.put("sessionId", sessionId);
+            answer.put("intent", "CONVERSATION");
+            answer.put("answer", simulated);
+            answer.put("provider", "local-simulation");
+            answer.put("model", "simulated-governance-agent");
+            answer.put("latencyMs", 8);
+            answer.put("executionMode", "LOCAL_SIMULATION");
+            answer.put("goal", request.getQuestion());
+            answer.put("plan", List.of(Map.of("step", 1, "action", "理解对话意图", "status", "COMPLETED")));
+            answer.put("toolCalls", List.of());
+            answer.put("analysis", Map.of("type", "conversation", "sessionId", sessionId));
+            answer.put("policyReferences", List.of());
+            answer.put("suggestedQuestions", List.of("近7天哪个区域事件最多？", "当前待复核任务有多少？", "生成治理报告预览"));
+            saveMessage(sessionId, "assistant", simulated, "CONVERSATION", "CONVERSATION_SIMULATOR", null);
+            return answer;
+        }
+        if (isConversationQuestion(request.getQuestion())) {
+            String fallback = "我已收到你的消息。我可以协助分析校园电动车治理数据、热点区域、事件趋势、重复车辆、待复核任务和治理报告。涉及处罚、通知或申诉状态的操作仍需管理员确认。";
+            AiTextResult generated = generateConversationNarrative(request.getQuestion(), sessionId, fallback);
+            Map<String, Object> answer = new LinkedHashMap<>();
+            answer.put("sessionId", sessionId);
+            answer.put("intent", "CONVERSATION");
+            answer.put("answer", generated.getText());
+            answer.put("provider", generated.getProvider());
+            answer.put("model", generated.getModelName());
+            answer.put("latencyMs", generated.getLatencyMs());
+            answer.put("executionMode", isLiveProvider(generated.getProvider()) ? "LIVE_MODEL" : "DEGRADED");
+            answer.put("goal", request.getQuestion());
+            answer.put("plan", List.of(Map.of("step", 1, "action", "理解并回复对话", "status", "COMPLETED")));
+            answer.put("toolCalls", List.of());
+            answer.put("analysis", Map.of("type", "conversation"));
+            answer.put("policyReferences", List.of());
+            answer.put("suggestedQuestions", List.of("近7天哪个区域事件最多？", "当前待复核任务有多少？", "生成治理报告预览"));
+            saveMessage(sessionId, "assistant", generated.getText(), "CONVERSATION", "MODEL_CONVERSATION", null);
+            return answer;
+        }
         String intent = classifyIntent(request);
         Map<String, Object> analysis = runTool(intent, request);
         List<Map<String, Object>> policies = searchPolicyChunks(request.getQuestion(), 5);
@@ -68,12 +109,65 @@ public class AiIntelligenceServiceImpl implements AiIntelligenceService {
         answer.put("provider", generated.getProvider());
         answer.put("model", generated.getModelName());
         answer.put("latencyMs", generated.getLatencyMs());
+        answer.put("executionMode", isLiveProvider(generated.getProvider()) ? "LIVE_MODEL" : "LOCAL_SIMULATION");
+        answer.put("goal", request.getQuestion());
+        answer.put("plan", List.of(Map.of("step", 1, "action", "读取治理分析数据", "tool", toolName(intent), "status", "COMPLETED"),
+                Map.of("step", 2, "action", "整理结论与规则依据", "tool", "POLICY_SEARCH", "status", "COMPLETED")));
+        answer.put("toolCalls", List.of(Map.of("name", toolName(intent), "status", "COMPLETED", "resultCount", resultCount(analysis)),
+                Map.of("name", "POLICY_SEARCH", "status", "COMPLETED", "resultCount", policies.size())));
         answer.put("analysis", analysis);
         answer.put("policyReferences", policies);
         answer.put("suggestedQuestions", suggestedQuestions(intent));
         saveMessage(sessionId, "assistant", generated.getText(), intent,
                 json(List.of(toolName(intent), "POLICY_SEARCH")), json(policies));
         return answer;
+    }
+
+    private boolean isConversationQuestion(String question) {
+        String q = question == null ? "" : question.trim().toLowerCase(Locale.ROOT);
+        if (q.isBlank()) return true;
+        return q.matches(".*(你好|您好|嗨|hello|hi|在吗|谢谢|感谢|再见|拜拜|你是谁|你能做什么|怎么用|帮助|功能介绍|继续|刚才|上一条|明白了吗|懂了吗).*" )
+                || q.length() <= 6 && q.matches("[?？!！。,.，、 ]*");
+    }
+
+    private String simulatedConversation(String question, String sessionId) {
+        String q = question == null ? "" : question.trim();
+        if (q.matches(".*(你好|您好|嗨|hello|hi).*")) {
+            return "你好，我是校园电动车治理助手。你可以直接问我热点区域、事件趋势、重复车辆、待复核任务、申诉预审或治理报告。当前为本地模拟对话模式。";
+        }
+        if (q.matches(".*(你是谁|你能做什么|功能|帮助|怎么用).*")) {
+            return "我可以协助查看校园电动车治理数据、定位高风险区域、梳理多源事件、整理待复核任务，并生成报告预览。模拟模式只提供分析建议，不会自动处罚、通知或修改申诉状态。";
+        }
+        if (q.matches(".*(谢谢|感谢|再见|拜拜).*")) {
+            return "不客气。需要分析时，直接告诉我时间范围、区域或事件编号即可。";
+        }
+        if (q.matches(".*(继续|刚才|上一条|明白了吗|懂了吗).*")) {
+            return "可以继续。请补充你希望深入的方向，例如“把刚才的热点区域按风险等级排序”或“结合待复核任务给出优先清单”。当前会话编号：" + sessionId + "。";
+        }
+        return "我已收到你的消息。当前是本地模拟智能体，会结合当前会话提供治理分析建议。你可以直接询问近7天热点、趋势、重复车辆、待复核任务或报告预览。";
+    }
+
+    private int resultCount(Map<String, Object> analysis) {
+        for (String key : List.of("rows", "hotspots", "trend", "timeline", "relations")) {
+            Object value = analysis.get(key);
+            if (value instanceof List<?> list) return list.size();
+        }
+        return analysis.isEmpty() ? 0 : 1;
+    }
+
+    private boolean isLiveProvider(String provider) {
+        return provider != null && (provider.equalsIgnoreCase("openai-compatible") || provider.equalsIgnoreCase("deepseek"));
+    }
+
+    private AiTextResult generateConversationNarrative(String question, String sessionId, String fallback) {
+        try {
+            String instructions = "你是校园电动车监测管理系统中的中文治理助手。自然、简洁地和管理员对话。你可以介绍自己的能力，但不能编造系统数据；涉及处罚、通知、冻结、申诉状态变更时，必须说明需要管理员确认。";
+            String history = json(jdbcTemplate.queryForList("SELECT role, content FROM ai_assistant_message WHERE session_id=? ORDER BY message_id DESC LIMIT 8", sessionId));
+            return textGateway.complete(instructions, "最近会话：" + history + "\n管理员消息：" + question);
+        } catch (Exception ex) {
+            log.warn("对话模型调用失败，使用降级回复: {}", ex.getMessage());
+            return new AiTextResult(fallback, "rule-engine-fallback", "degraded-conversation", 0, ex.getMessage());
+        }
     }
 
     @Override
@@ -139,6 +233,7 @@ public class AiIntelligenceServiceImpl implements AiIntelligenceService {
             double temporal = Math.max(0D, 1D - minutes / 60D);
             double identity = sameIdentity(event, candidate) ? identityConfidence(event, candidate) : 0D;
             boolean sameSource = Objects.equals(event.get("source_type"), candidate.get("source_type"));
+            boolean crossDevice = !Objects.equals(event.get("device_id"), candidate.get("device_id"));
             boolean eligible = identity >= 0.80D || (distance >= 0D && distance <= 120D && minutes <= 10D);
             if (!eligible) continue;
             relatedCount++;
@@ -150,8 +245,15 @@ public class AiIntelligenceServiceImpl implements AiIntelligenceService {
             long source = Math.min(eventId, number(candidate.get("event_id")).longValue());
             long target = Math.max(eventId, number(candidate.get("event_id")).longValue());
             boolean crossSource = !sameSource;
-            String type = crossSource ? "CROSS_SOURCE" : (identity >= 0.80D ? "REPEAT_BEHAVIOR" : "SPATIOTEMPORAL");
-            double confidence = clamp(0.45D * spatial + 0.25D * temporal + 0.30D * identity);
+            String type = crossSource ? "CROSS_SOURCE"
+                    : (crossDevice ? "CROSS_CAMERA"
+                    : (identity >= 0.80D ? "REPEAT_BEHAVIOR" : "SPATIOTEMPORAL"));
+            // When the registered vehicle identity is exact, do not let a
+            // missing coordinate from an edge event dilute that evidence.
+            // Otherwise combine spatial, temporal and identity signals.
+            double confidence = identity >= 0.80D
+                    ? identity
+                    : clamp(0.45D * spatial + 0.25D * temporal + 0.30D * identity);
             String explanation = identity >= 0.80D
                     ? "同一车辆/车牌在时间窗口内被多源感知设备捕获"
                     : String.format(Locale.ROOT, "不同来源在%.0f米、%.1f分钟内对同一区域形成时空证据", distance, minutes);
@@ -393,7 +495,17 @@ public class AiIntelligenceServiceImpl implements AiIntelligenceService {
     }
 
     private double identityConfidence(Map<String, Object> first, Map<String, Object> second) {
-        double confidence = sameIdentity(first, second) ? 0.82D : 0D;
+        Object firstVehicle = first.get("vehicle_id");
+        Object secondVehicle = second.get("vehicle_id");
+        boolean vehicleMatch = firstVehicle != null && secondVehicle != null
+                && Objects.equals(String.valueOf(firstVehicle), String.valueOf(secondVehicle));
+        String firstPlate = text(first.get("license_plate"), "");
+        String secondPlate = text(second.get("license_plate"), "");
+        boolean plateMatch = !firstPlate.isBlank() && firstPlate.equalsIgnoreCase(secondPlate);
+        // An exact registered vehicle match is stronger than a plate-only
+        // match. The values are confidence priors, then any detector-provided
+        // confidence can raise them further.
+        double confidence = vehicleMatch ? 0.96D : (plateMatch ? 0.90D : 0D);
         confidence = Math.max(confidence, decimal(first.get("identity_confidence")));
         confidence = Math.max(confidence, decimal(second.get("identity_confidence")));
         return clamp(confidence);

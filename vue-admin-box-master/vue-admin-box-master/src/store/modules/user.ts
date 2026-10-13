@@ -1,6 +1,6 @@
 import { loginApi, loginOutApi } from '@/api/user'
 import { ActionContext } from 'vuex'
-import { setUserInfo, removeUserInfo } from '@/utils/auth.js'
+import { setToken, setUserInfo, removeToken, removeUserInfo } from '@/utils/auth.js'
 
 export interface UserState {
   token: string
@@ -45,6 +45,9 @@ const actions = {
 
           commit('tokenChange', token)
           commit('infoChange', safeUser)
+          // Keep the legacy request client in sync with the main auth state.
+          // Agent APIs use this client and read the ev_token key.
+          setToken(token)
           setUserInfo(safeUser)
 
           // Compatibility for legacy pages that read token directly from storage.
@@ -66,6 +69,7 @@ const actions = {
       .finally(() => {
         commit('tokenChange', '')
         commit('infoChange', {})
+        removeToken()
         removeUserInfo()
         localStorage.removeItem('token')
         sessionStorage.removeItem('token')

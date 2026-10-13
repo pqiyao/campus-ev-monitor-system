@@ -4,10 +4,10 @@
       <header class="page-intro">
         <div class="intro-copy">
           <h1>智能治理中心</h1>
-          <p>查询热点与积压、预审申诉、生成报告、维护校规。模型只给参考，不改变处罚或申诉状态。</p>
+          <p>可以直接对话查询治理数据、分析风险并生成报告建议。模拟模式只给参考，不改变处罚或申诉状态。</p>
         </div>
         <div class="intro-actions">
-            <span class="quiet-tag">AI治理助手 · {{ config.mode === 'gpt' ? '在线分析' : '本地演示' }}</span>
+            <span class="quiet-tag">AI治理助手 · {{ runtimeReady ? '多源智能分析' : (config.mode === 'gpt' ? '在线分析' : '本地模拟对话') }}</span>
           <el-button :loading="reportLoading" @click="createReport">生成周报</el-button>
           <el-button type="primary" :icon="Refresh" @click="loadReferenceData">刷新</el-button>
         </div>
@@ -46,7 +46,7 @@
             </article>
             <article v-if="chatLoading" class="bubble assistant">
               <header><span>助手</span></header>
-              <p class="muted">正在查询只读分析工具…</p>
+              <p class="muted">正在理解你的问题…</p>
             </article>
           </div>
           <div class="prompt-flow">
@@ -247,7 +247,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { DocumentAdd, Download, Plus, Refresh, Search } from '@element-plus/icons'
 import { ElMessage } from 'element-plus'
 import {
@@ -260,6 +260,7 @@ import {
   getPolicyKnowledge,
   reviewAppealByAi
 } from '@/api/aiGovernance'
+import { getAgentHistory, getAgentStatus, runAgent } from '@/api/agent'
 
 const activeView = ref('assistant')
 const tabs = [
@@ -279,6 +280,8 @@ const appealLoading = ref(false)
 const policySaving = ref(false)
 const policyDialog = ref(false)
 const messagePane = ref<HTMLElement | null>(null)
+const runtimeReady = ref(false)
+let agentPollTimer: number | undefined
 
 const config = reactive<any>({})
 const currentResult = ref<any>({})
@@ -298,9 +301,9 @@ const policyForm = reactive({
 const messages = ref<any[]>([
   {
     role: 'assistant',
-    content: '可以询问治理趋势、热点区域、重复车辆或待复核任务。分析基于固定只读工具。',
+    content: '你好，我是校园电动车治理助手。当前已接入多源智能分析，可结合摄像头、车辆定位、电子围栏、AI事件、历史违规、巡检任务和设备遥测回答问题。',
     provider: 'system',
-    model: 'read-only tools'
+    model: 'spatiotemporal-governance-agent'
   }
 ])
 const quickPrompts = ref([
@@ -334,16 +337,18 @@ const currentIntentLabel = computed(
 async function loadReferenceData() {
   referenceLoading.value = true
   try {
-    const [c, r, p, cfg]: any[] = await Promise.all([
+    const [c, r, p, cfg, agent]: any[] = await Promise.all([
       getEventCorrelations({ limit: 50 }),
       getGovernanceReports({ limit: 30 }),
       getPolicyKnowledge(),
-      getAiConfig()
+      getAiConfig(),
+      getAgentStatus().catch(() => ({ state: 'UNAVAILABLE' }))
     ])
     correlations.value = c.data || []
     reports.value = r.data || []
     policies.value = p.data || []
     Object.assign(config, cfg.data || {})
+    runtimeReady.value = String(agent?.data?.state || agent?.state || '').toUpperCase() === 'READY'
   } finally {
     referenceLoading.value = false
   }
@@ -367,24 +372,76 @@ async function sendQuestion() {
   chatLoading.value = true
   await scrollBottom()
   try {
-    const r: any = await askGovernanceAssistant({
-      sessionId: sessionId.value || undefined,
-      question: text
-    })
-    const data = r.data || {}
-    sessionId.value = data.sessionId || sessionId.value
-    currentResult.value = data
-    messages.value.push({
-      role: 'assistant',
-      content: data.answer,
-      provider: data.provider,
-      model: data.model
-    })
-    quickPrompts.value = data.suggestedQuestions || quickPrompts.value
+    if (runtimeReady.value) await sendAgentQuestion(text)
+    else await sendGovernanceQuestion(text)
   } finally {
     chatLoading.value = false
     await scrollBottom()
   }
+}
+
+async function sendGovernanceQuestion(text: string) {
+  const r: any = await askGovernanceAssistant({ sessionId: sessionId.value || undefined, question: text })
+  const data = r.data || r || {}
+  sessionId.value = data.sessionId || sessionId.value
+  currentResult.value = data
+  messages.value.push({ role: 'assistant', content: data.answer, provider: data.provider, model: data.model })
+  quickPrompts.value = data.suggestedQuestions || quickPrompts.value
+}
+
+async function sendAgentQuestion(text: string) {
+  const r: any = await runAgent({ goal: text, preset: 'campus-spatiotemporal-agent', limit: 30 })
+  const data = r.data || r || {}
+  sessionId.value = data.sessionId || sessionId.value
+  if (!sessionId.value) throw new Error('智能服务未返回会话编号')
+  applyAgentContext(data.context || {})
+  const answer = await waitForAgentAnswer(sessionId.value)
+  if (!answer) throw new Error('智能服务暂未返回结果，请稍后刷新会话')
+  messages.value.push({ role: 'assistant', content: answer, provider: 'deepseek-agent', model: 'spatiotemporal-governance-agent' })
+}
+
+async function waitForAgentAnswer(id: string): Promise<string> {
+  const deadline = Date.now() + 180000
+  while (Date.now() < deadline) {
+    const payload: any = await getAgentHistory(id)
+    const answer = extractAssistantText(payload)
+    if (answer) return answer
+    await new Promise(resolve => { agentPollTimer = window.setTimeout(resolve, 2500) })
+  }
+  return ''
+}
+
+function applyAgentContext(ctx: any) {
+  const evidence = ctx?.fusionSummary?.recentEvidence || []
+  currentResult.value = {
+    intent: 'GOVERNANCE_OVERVIEW',
+    provider: 'deepseek-agent',
+    model: 'spatiotemporal-governance-agent',
+    analysis: {
+      summary: {
+        events: Array.isArray(ctx.events) ? ctx.events.length : 0,
+        pendingReview: Array.isArray(ctx.events) ? ctx.events.filter((row: any) => row.status === 'REVIEW_PENDING').length : 0,
+        crossCameraRelations: evidence.length,
+        openTasks: Array.isArray(ctx.patrolMissions) ? ctx.patrolMissions.length : 0
+      },
+      hotspots: evidence.map((row: any) => ({ location: row.location_name || '未标注地点', count: row.related_event_count || 1 }))
+    },
+    policyReferences: []
+  }
+}
+
+function extractAssistantText(payload: any): string {
+  const root = payload?.data || payload?.result?.value || payload?.value || payload
+  const candidates = root?.messages || root?.items || root?.events || root?.history || []
+  if (!Array.isArray(candidates)) return ''
+  const rows = candidates.map((row: any) => row?.event ? row.event : row)
+    .map((row: any) => row?.data?.message || row?.message || row)
+    .filter((row: any) => ['assistant', 'model'].includes(String(row?.role || row?.author || '').toLowerCase()))
+  const row = rows[rows.length - 1]
+  if (!row) return ''
+  if (typeof row.content === 'string') return row.content
+  if (Array.isArray(row.content)) return row.content.map((item: any) => item?.type === 'text' || item?.type === 'output_text' || !item?.type ? (item?.text || item?.content || '') : '').filter(Boolean).join('\n')
+  return String(row.text || row.message || '')
 }
 
 async function runAppealReview() {
@@ -501,6 +558,7 @@ function appealRecommendation(value: string) {
 }
 
 onMounted(loadReferenceData)
+onUnmounted(() => { if (agentPollTimer) window.clearTimeout(agentPollTimer) })
 </script>
 
 <style scoped lang="scss">
@@ -618,7 +676,8 @@ onMounted(loadReferenceData)
 
 .chat-surface,
 .side-surface {
-  min-height: 620px;
+  height: 680px;
+  min-height: 0;
   display: flex;
   flex-direction: column;
 }
@@ -626,12 +685,18 @@ onMounted(loadReferenceData)
 .message-flow {
   flex: 1;
   overflow: auto;
-  max-height: 420px;
-  padding: 8px 18px 12px;
+  min-height: 0;
+  max-height: none;
+  padding: 16px 18px 12px;
 }
 
 .bubble {
   margin-bottom: 14px;
+  max-width: 92%;
+}
+
+.bubble.user {
+  margin-left: auto;
 }
 
 .bubble header {
@@ -650,10 +715,13 @@ onMounted(loadReferenceData)
   line-height: 1.7;
   white-space: pre-wrap;
   background: rgba(244, 247, 250, 0.95);
+  text-align: left !important;
 }
 
 .bubble.user p {
   background: rgba(58, 111, 143, 0.12);
+  width: fit-content;
+  margin-left: auto;
 }
 
 .prompt-flow {
@@ -679,6 +747,14 @@ onMounted(loadReferenceData)
   gap: 10px;
   padding: 12px 18px 16px;
   align-items: end;
+  border-top: 1px solid rgba(94, 119, 139, 0.1);
+  background: rgba(255, 255, 255, 0.42);
+}
+
+.composer :deep(.el-textarea__inner) {
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 0 0 1px rgba(94, 119, 139, 0.16) inset;
 }
 
 .metric-flow {

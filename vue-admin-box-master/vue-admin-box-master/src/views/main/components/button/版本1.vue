@@ -524,7 +524,7 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import axios from 'axios'
 
-const API = 'http://localhost:8083/api'
+const API = '/api'
 axios.defaults.headers.common['Authorization'] = `Bearer ${localStorage.getItem('token')}`
 
 // ==================== 全局 ====================
@@ -876,8 +876,8 @@ const uploadStudentPhoto = uploadVehiclePhoto
 const getFullUrl = url => {
   if (!url) return ''
   if (url.startsWith('http')) return url
-  if (url.startsWith('/uploads')) return `http://localhost:8083${url}`
-  return `http://localhost:8083/uploads/${url.replace(/^\/+/, '')}`
+  if (url.startsWith('/uploads')) return url
+  return `/uploads/${url.replace(/^\/+/, '')}`
 }
 const previewImage = url => { if (url) previewUrl.value = getFullUrl(url) }
 const handleImgError = e => { e.target.style.display = 'none' }

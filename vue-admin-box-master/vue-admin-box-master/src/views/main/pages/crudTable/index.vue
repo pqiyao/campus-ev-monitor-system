@@ -494,7 +494,7 @@ import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import axios from 'axios'
 
-const API_BASE_URL = 'http://localhost:8083'
+const API_BASE_URL = ''
 
 // 筛选表单
 const filterForm = reactive({

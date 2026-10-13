@@ -1633,8 +1633,8 @@ const updateMapMarkers = (mapData) => {
     mapData.markers.forEach(marker => {
       const point = new BMapGL.Point(marker.lng, marker.lat)
       let icon = null
-      if (marker.type === 'camera') icon = new BMapGL.Icon('/img/camera_marker.png', new BMapGL.Size(32, 32))
-      else if (marker.type === 'violation') icon = new BMapGL.Icon('/img/violation_marker.png', new BMapGL.Size(32, 32))
+      if (marker.type === 'camera') icon = new BMapGL.Icon('/img/map_camera.png', new BMapGL.Size(32, 32))
+      else if (marker.type === 'violation') icon = new BMapGL.Icon('/img/map_parking.png', new BMapGL.Size(32, 32))
       const markerObj = new BMapGL.Marker(point, { icon })
       const infoHtml = `
         <div style="padding:10px; min-width:200px;">

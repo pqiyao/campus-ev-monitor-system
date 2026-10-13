@@ -585,7 +585,7 @@ import axios from 'axios'
 import { useRouter } from 'vue-router'
 
 const router = useRouter()
-const API = 'http://localhost:8083/api'
+const API = '/api'
 axios.defaults.headers.common['Authorization'] = `Bearer ${localStorage.getItem('token')}`
 
 // ==================== 全局状态 ====================
@@ -1082,8 +1082,8 @@ const formatDate = (dateStr) => { if (!dateStr) return ''; return dateStr.split(
 const getFullImageUrl = (url) => {
   if (!url) return '';
   if (url.startsWith('http://') || url.startsWith('https://')) return url;
-  if (url.startsWith('/uploads')) return `http://localhost:8083${url}`;
-  return `http://localhost:8083/uploads/${url.replace(/^\/+/, '')}`;
+  if (url.startsWith('/uploads')) return url;
+  return `/uploads/${url.replace(/^\/+/, '')}`;
 }
 const getStatusText = (status) => ({ pending: '待审核', approved: '已通过', rejected: '已拒绝', frozen: '已冻结', expired: '已过期' }[status] || status)
 const getUserTypeText = (userType) => ({ student: '学生', teacher: '教师', service: '后勤', admin: '管理员' }[userType] || userType)

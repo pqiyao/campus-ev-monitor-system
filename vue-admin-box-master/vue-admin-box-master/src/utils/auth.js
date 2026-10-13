@@ -3,7 +3,13 @@ const USER_INFO_KEY = 'ev_user_info'
 
 // 获取token
 export function getToken() {
+    // Keep compatibility with the main Vuex auth flow, which historically
+    // stores the token under `token` (and may also use sessionStorage).
     return localStorage.getItem(TOKEN_KEY)
+        || localStorage.getItem('token')
+        || sessionStorage.getItem(TOKEN_KEY)
+        || sessionStorage.getItem('token')
+        || ''
 }
 
 // 设置token
@@ -14,6 +20,9 @@ export function setToken(token) {
 // 移除token
 export function removeToken() {
     localStorage.removeItem(TOKEN_KEY)
+    localStorage.removeItem('token')
+    sessionStorage.removeItem(TOKEN_KEY)
+    sessionStorage.removeItem('token')
 }
 
 // 获取用户信息

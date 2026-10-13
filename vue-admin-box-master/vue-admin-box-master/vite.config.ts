@@ -15,7 +15,9 @@ const alias: Record<string, string> = {
 export default ({ command }: ConfigEnv): UserConfigExport => {
   const prodMock = true;
   return {
-    base: command === 'serve' ? '/' : './',
+    // 系统固定部署在站点根目录。生产环境使用相对 base 会让 Vite
+    // 把 public/img 中的背景图错误解析为 /assets/img/*，导致线上 404。
+    base: '/',
     resolve: {
       alias
     },

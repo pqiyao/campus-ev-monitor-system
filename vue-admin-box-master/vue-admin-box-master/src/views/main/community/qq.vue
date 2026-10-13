@@ -470,7 +470,7 @@ const router = useRouter()
 const WORKSPACE_COUNSELOR_LS = 'counselor_workspace_user_id'
 const goUserManage = () => router.push('/community/user-manage')
 
-const API = 'http://localhost:8083/api'
+const API = '/api'
 axios.defaults.headers.common['Authorization'] = `Bearer ${localStorage.getItem('token')}`
 
 // ==================== 全局 ====================

@@ -450,7 +450,7 @@ import { useRouter } from 'vue-router'
 const router = useRouter()
 
 // 配置axios
-const API_BASE_URL = 'http://localhost:8083/api'
+const API_BASE_URL = '/api'
 // 从localStorage获取token
 const token = localStorage.getItem('token')
 if (token) {

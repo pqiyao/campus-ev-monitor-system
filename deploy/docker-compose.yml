@@ -1,0 +1,54 @@
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: ev-monitor-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: "1234"
+      MYSQL_DATABASE: ev_monitor
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./ev-monitor-db-sync.sql:/docker-entrypoint-initdb.d/01-sync.sql:ro
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+  redis:
+    image: redis:7-alpine
+    container_name: ev-monitor-redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+  app:
+    image: eclipse-temurin:21-jre
+    container_name: ev-monitor-app
+    restart: unless-stopped
+    depends_on:
+      - mysql
+      - redis
+    working_dir: /app
+    command: ["java", "-Xms512m", "-Xmx1536m", "-jar", "/app/ev-monitor-platform.jar"]
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/ev_monitor?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+      SPRING_DATASOURCE_USERNAME: root
+      SPRING_DATASOURCE_PASSWORD: "1234"
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: "6379"
+      SERVER_ADDRESS: 0.0.0.0
+    volumes:
+      - ./ev-monitor-platform.jar:/app/ev-monitor-platform.jar:ro
+      - app_uploads:/app/uploads
+    expose:
+      - "8083"
+  web:
+    image: nginx:1.27-alpine
+    container_name: ev-monitor-web
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./dist:/usr/share/nginx/html:ro
+volumes:
+  mysql_data:
+  redis_data:
+  app_uploads:

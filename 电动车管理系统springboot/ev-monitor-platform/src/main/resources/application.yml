@@ -117,3 +117,17 @@ ev-monitor:
   baidu-map:
     # 与 vue-admin 大屏（dashboard / 全屏）一致；学生端通过 GET /api/client/config 拉取
     ak: SUBe4C3SHSL9Uyd9P4xgq6GMdaZF2Irj
+
+# Isolated Agent workbench integration. DSH stays a separate local runtime;
+# no model key is stored in this project.
+app:
+  agent:
+    dsh:
+      enabled: ${DSH_ENABLED:true}
+      base-url: ${DSH_BASE_URL:http://127.0.0.1:8092}
+      profile: ${DSH_PROFILE:web}
+      workspace-root: ${DSH_WORKSPACE_ROOT:E:/资源1/校园电动车监测管理系统/dsh-campus-home}
+      agent-preset: ${DSH_AGENT_PRESET:campus-spatiotemporal-agent}
+      timeout-ms: ${DSH_TIMEOUT_MS:5000}
+      prompt-version: ${DSH_PROMPT_VERSION:campus-spatiotemporal-agent-v1}
+      system-prompt: ${DSH_SYSTEM_PROMPT:}

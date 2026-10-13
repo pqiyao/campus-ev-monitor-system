@@ -5,7 +5,7 @@ import { getToken, removeToken } from './auth'
 
 // 创建axios实例
 const service = axios.create({
-    baseURL: 'http://localhost:8083/api',
+    baseURL: '/api',
     timeout: 15000
 })
 

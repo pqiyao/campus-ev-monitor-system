@@ -37,6 +37,12 @@ __pycache__/
 *.sqlite3
 tmp/
 
+# Local runtime state and generated reports
+runtime-logs/
+dsh-campus-home/sessions/
+dsh-campus-home/storages/
+dsh-campus-home/.anonymous-user-id
+
 # Large archives and media (keep source code and documentation in Git)
 *.zip
 *.7z

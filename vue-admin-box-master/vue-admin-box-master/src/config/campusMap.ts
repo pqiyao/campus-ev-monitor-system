@@ -24,7 +24,7 @@ export const CAMPUS_PRESETS: Readonly<Record<CampusKey, CampusPreset>> = Object.
 })
 
 // 修改此处即可同步切换大屏地图和电子围栏地图。
-export const ACTIVE_CAMPUS_KEY: CampusKey = 'glutPingfeng'
+export const ACTIVE_CAMPUS_KEY: CampusKey = 'hyNormalEast'
 export const ACTIVE_CAMPUS = CAMPUS_PRESETS[ACTIVE_CAMPUS_KEY]
 export const LEGACY_CAMPUS_CENTER = CAMPUS_PRESETS.hyNormalEast
 

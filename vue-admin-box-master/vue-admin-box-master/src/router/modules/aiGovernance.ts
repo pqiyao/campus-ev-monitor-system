@@ -12,9 +12,9 @@ const route: Route[] = [{
     component: createNameComponent(() => import('@/views/main/ai-governance/index.vue')),
     meta: { title: '治理工作台', icon: 'sfont system-monitor' }
   }, {
-    path: 'intelligence',
-    component: createNameComponent(() => import('@/views/main/ai-governance/intelligence.vue')),
-    meta: { title: 'AI 分析助手', icon: 'sfont system-data' }
+    path: 'agent-workbench',
+    component: createNameComponent(() => import('@/views/main/ai-governance/agent-workbench.vue')),
+    meta: { title: '多源智能体工作台', icon: 'sfont system-data' }
   }, {
     path: 'patrol',
     component: createNameComponent(() => import('@/views/main/patrol/index.vue')),
