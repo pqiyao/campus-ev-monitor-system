@@ -53,7 +53,7 @@
       <header class="chat-header">
         <div class="chat-title">
           <strong>校园电动车时空治理智能体</strong>
-          <span class="subtitle">基于平台多源只读事实推理 · 不能直接处罚</span>
+          <span class="subtitle">基于平台多源只读事实推理 · 工具可行动</span>
         </div>
         <div class="header-right">
           <span v-if="status.baseUrl" class="baseurl-tag">{{ status.baseUrl }}</span>
@@ -63,6 +63,17 @@
           </button>
         </div>
       </header>
+
+      <!-- KPI 仪表盘（原治理工作台关键指标融合进来） -->
+      <section class="stats-bar">
+        <div v-for="c in kpiCards" :key="c.key" class="kpi-card" :class="c.tone">
+          <div class="kpi-label">{{ c.label }}</div>
+          <div class="kpi-value">{{ c.value }}</div>
+        </div>
+        <div class="kpi-refresh" @click="loadStats" title="刷新">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10"/><path d="M20.49 15A9 9 0 0 1 5.64 18.36L1 14"/></svg>
+        </div>
+      </section>
 
       <!-- 空态 -->
       <div v-if="messages.length === 0" class="chat-welcome">
@@ -94,7 +105,35 @@
             </template>
           </div>
           <div class="bubble-body">
-            <div class="bubble-text">{{ msg.content }}</div>
+            <!-- Tool-call execution trace (ReAct) -->
+            <div v-if="msg.toolCalls?.length" class="tool-trace">
+              <div
+                v-for="(tc, idx) in msg.toolCalls"
+                :key="idx"
+                class="tool-card"
+                :class="{ running: tc.status === 'running', done: tc.status === 'done' }"
+              >
+                <div class="tool-card-head">
+                  <span class="tool-icon">🔧</span>
+                  <span class="tool-name">{{ tc.name }}</span>
+                  <span v-if="tc.status === 'running'" class="tool-status running">执行中…</span>
+                  <span v-else class="tool-status done">✓ {{ summarize(tc.result) }}</span>
+                </div>
+                <details class="tool-details">
+                  <summary>参数</summary>
+                  <pre>{{ JSON.stringify(tc.args, null, 2) }}</pre>
+                </details>
+                <details v-if="tc.result" class="tool-details">
+                  <summary>返回结果</summary>
+                  <pre>{{ truncate(tc.result, 2000) }}</pre>
+                </details>
+              </div>
+            </div>
+            <div
+              class="bubble-text markdown-body"
+              :class="{ 'is-user': msg.role === 'user' }"
+              v-html="renderMarkdown(msg.content)"
+            ></div>
             <div class="bubble-time">{{ formatTime(msg.time) }}</div>
           </div>
         </div>
@@ -198,9 +237,39 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { getAgentContext, getAgentHistory, getAgentStatus, runAgent } from '@/api/agent'
+import { getAgentContext, getAgentHistory, getAgentStatus, getAiStats, listAgentSessions, runAgentStream } from '@/api/agent'
+import { marked } from 'marked'
+import DOMPurify from 'dompurify'
+
+// ---- configure marked for clean GFM rendering ----
+marked.setOptions({
+  breaks: true,
+  gfm: true,
+})
+
+// incremental render cache keyed by content string — streaming keeps growing it
+const markdownCache = new Map<string, string>()
+function renderMarkdown(content: string): string {
+  if (!content) return ''
+  const cached = markdownCache.get(content)
+  if (cached != null) return cached
+  try {
+    // marked parses markdown → HTML, DOMPurify strips any dangerous nodes
+    const raw = marked.parse(content, { async: false }) as string
+    const safe = DOMPurify.sanitize(raw, { ADD_ATTR: ['target'] })
+    markdownCache.set(content, safe)
+    // keep cache bounded — SSE produces many intermediate strings we don't need
+    if (markdownCache.size > 128) {
+      const firstKey = markdownCache.keys().next().value
+      markdownCache.delete(firstKey)
+    }
+    return safe
+  } catch {
+    return ''
+  }
+}
 
 // ============ 状态 ============
 interface ChatMsg { role: 'user' | 'assistant'; content: string; seq?: any; time?: any }
@@ -222,7 +291,14 @@ const currentSessionId = ref('')
 const drawerVisible = ref(true)
 const sessions = ref<SessionMeta[]>([])
 
-let historyTimer: number | undefined  // kept for backward compat, not used in sync mode
+// KPI 仪表盘（融合自治理工作台）
+const kpiStats = reactive({ total: 0, pendingReview: 0, confirmed: 0, openTasks: 0 })
+const kpiCards = computed(() => [
+  { key: 'total', label: '接入事件', value: kpiStats.total, tone: 'info' },
+  { key: 'pendingReview', label: '待人工审', value: kpiStats.pendingReview, tone: 'warn' },
+  { key: 'confirmed', label: '已闭环', value: kpiStats.confirmed, tone: 'ok' },
+  { key: 'openTasks', label: '开放任务', value: kpiStats.openTasks, tone: 'brand' },
+])
 const messagesRef = ref<HTMLElement | null>(null)
 const inputRef = ref<HTMLTextAreaElement | null>(null)
 
@@ -264,6 +340,27 @@ function formatTime(t: any): string {
   const pad = (n: number) => n.toString().padStart(2, '0')
   return `${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
+function summarize(result: string | null | undefined): string {
+  if (!result) return ''
+  try {
+    const j = JSON.parse(result)
+    if (Array.isArray(j)) return `${j.length} 条结果`
+    if (j && typeof j === 'object') {
+      if (j.ok) return '执行成功 ✓'
+      if (j.error) return '错误'
+      const keys = Object.keys(j)
+      if (keys.length <= 3) return keys.join(', ')
+    }
+  } catch {}
+  // fallback: count JSON array-like patterns in raw text
+  const m = result.match(/"camera_name"/g) || result.match(/"event_id"/g)
+  if (m) return `${m.length} 条结果`
+  return '完成'
+}
+function truncate(s: string, n: number): string {
+  if (!s) return ''
+  return s.length > n ? s.slice(0, n) + '\n…(truncated)' : s
+}
 function traceClass(type: string): string {
   if (type?.startsWith('tool/')) return 'tool'
   if (type?.startsWith('step/')) return 'step'
@@ -275,11 +372,33 @@ function shortenType(type: string): string {
   return type.replace(/^(tool|step|turn|assistant|user)\//, '')
 }
 
-// ============ 会话持久化（localStorage） ============
-function loadSessions() {
+// ============ 会话持久化 ============
+// 优先从后端 DB 加载真实历史列表；localStorage 仅作瞬时兜底
+async function loadSessions() {
+  try {
+    // axios 拦截器自动 unwrap ApiResponse → payload 就是 List<session>
+    const payload: any = await listAgentSessions(50)
+    const arr = Array.isArray(payload) ? payload : []
+    if (arr.length) {
+      sessions.value = arr.map((s: any) => ({
+        sessionId: s.session_id || s.sessionId,
+        title: s.title || '对话',
+        updatedAt: new Date(s.update_time || s.updateTime || s.create_time || s.createTime || Date.now()).getTime()
+      }))
+      // 后端有 2+ 条时，默认选第一条；否则继续用 localStorage 里的
+      if (sessions.value.length >= 2) {
+        currentSessionId.value = sessions.value[0].sessionId
+      }
+      return
+    }
+  } catch (e) {
+    console.warn('loadSessions 后端加载失败，走 localStorage', e)
+  }
+  // 后端空或失败 → 兜底 localStorage
   try {
     const raw = localStorage.getItem(LS_KEY)
-    sessions.value = raw ? JSON.parse(raw) : []
+    const arr = raw ? JSON.parse(raw) : []
+    sessions.value = Array.isArray(arr) ? arr : []
   } catch { sessions.value = [] }
 }
 function saveSessions() {
@@ -313,6 +432,11 @@ async function switchSession(sessionId: string) {
   try {
     const payload: any = await getAgentHistory(sessionId)
     applyHistory(payload)
+    // 空 messages → 后端重启过，内存 session 丢失
+    if (!messages.value.length) {
+      ElMessage.warning('该会话已过期（后端内存 session 已清除），将开启新对话')
+      newChat()
+    }
   } catch (e: any) {
     ElMessage.error(e?.message || '会话历史加载失败')
   }
@@ -326,53 +450,103 @@ function sendPrompt(text: string) {
   submitRun()
 }
 
-// ============ 核心提交（run() 直接调 LLM 同步返回 assistantReply） ============
+// ============ 核心提交（SSE 流式打字机） ============
+let currentAbort: (() => void) | null = null
 async function submitRun() {
   const goal = inputText.value.trim()
   if (!goal || running.value) return
   messages.value.push({ role: 'user', content: goal, time: Date.now() })
+  // placeholder assistant bubble — content grows as SSE chunks arrive
+  messages.value.push({ role: 'assistant', content: '', time: Date.now() })
   inputText.value = ''
   autoResize()
   running.value = true
   await scrollToBottom()
 
-  try {
-    const result: any = await runAgent({
+  const lastAssistantIdx = messages.value.length - 1
+
+  currentAbort = runAgentStream(
+    {
       goal,
       sessionId: currentSessionId.value || undefined,
       preset: DEFAULT_PRESET,
-      limit: DEFAULT_CONTEXT_LIMIT
-    })
-    const data = result?.result || result
-    if (data?.sessionId) currentSessionId.value = data.sessionId
-    // 直接用后端返回的 assistantReply（后端 run() 已经 append 到服务端 history）
-    if (data?.assistantReply) {
-      messages.value.push({ role: 'assistant', content: data.assistantReply, time: Date.now() })
-    }
-    if (data?.sessionId) {
-      const title = goal.length > 24 ? goal.slice(0, 24) + '…' : goal
-      upsertSession(data.sessionId, title)
-    }
-    // 刷新 trace（右侧抽屉用）
-    if (currentSessionId.value) {
-      try {
-        const h: any = await getAgentHistory(currentSessionId.value)
-        const hd = h?.result || h
-        trace.value = Array.isArray(hd?.trace) ? hd.trace : []
-      } catch {}
-    }
-  } catch (e: any) {
-    messages.value.push({ role: 'assistant', content: '❌ 请求失败：' + (e?.message || '未知错误'), time: Date.now() })
-  } finally {
-    running.value = false
-    await scrollToBottom()
-  }
+      limit: DEFAULT_CONTEXT_LIMIT,
+    },
+    {
+      onContext(_ctx) {
+        // right-hand drawer can refresh here if we want
+      },
+      onContent(delta) {
+        try {
+          const msg = messages.value[lastAssistantIdx]
+          if (msg) {
+            msg.content += delta
+            queueMicrotask(() => scrollToBottom())
+          }
+        } catch {}
+      },
+      onToolCallStart(name, args) {
+        try {
+          const msg = messages.value[lastAssistantIdx]
+          if (msg) {
+            if (!msg.toolCalls) msg.toolCalls = []
+            msg.toolCalls.push({ name, args, status: 'running', result: null })
+            queueMicrotask(() => scrollToBottom())
+          }
+        } catch {}
+      },
+      onToolCallResult(name, result) {
+        try {
+          const msg = messages.value[lastAssistantIdx]
+          if (msg?.toolCalls) {
+            const tc = msg.toolCalls.find((t: any) => t.name === name && t.status === 'running')
+            if (tc) { tc.status = 'done'; tc.result = result }
+          }
+        } catch {}
+      },
+      onDone(envelope: any) {
+        try {
+          if (envelope?.sessionId) {
+            currentSessionId.value = envelope.sessionId
+            const title = goal.length > 24 ? goal.slice(0, 24) + '…' : goal
+            upsertSession(envelope.sessionId, title)
+          }
+          if (envelope?.assistantReply && messages.value[lastAssistantIdx]) {
+            messages.value[lastAssistantIdx].content = envelope.assistantReply
+          }
+          // trace drawer —— 直接用已存的 message.toolCalls，不再额外 GET history
+        } finally {
+          running.value = false
+          currentAbort = null
+          scrollToBottom()
+        }
+      },
+      onError(msg) {
+        try {
+          if (messages.value[lastAssistantIdx]) {
+            messages.value[lastAssistantIdx].content =
+              messages.value[lastAssistantIdx].content || '❌ ' + (msg || '未知错误')
+          }
+        } finally {
+          running.value = false
+          currentAbort = null
+          scrollToBottom()
+        }
+      },
+    },
+  )
+}
+
+function abortRun() {
+  currentAbort?.()
+  currentAbort = null
+  running.value = false
 }
 
 function applyHistory(payload: any) {
-  const root = payload?.result?.value || payload?.value || payload
-  const msgs: ChatMsg[] = Array.isArray(root?.messages) ? root.messages : []
-  const tr: TraceEvent[] = Array.isArray(root?.trace) ? root.trace : []
+  // axios 拦截器已经 unwrap ApiResponse.data — payload 就是 { sessionId, messages, trace }
+  const msgs: ChatMsg[] = Array.isArray(payload?.messages) ? payload.messages : []
+  const tr: TraceEvent[] = Array.isArray(payload?.trace) ? payload.trace : []
   msgs.sort((a, b) => compareOrder(a, b))
   const existingKeys = new Set(messages.value.map(m => `${m.role}|${m.content}|${m.seq ?? ''}|${m.time ?? ''}`))
   for (const m of msgs) {
@@ -413,9 +587,16 @@ async function scrollToBottom() {
 }
 
 // ============ 生命周期 ============
+async function loadStats() {
+  try {
+    // axios 已 unwrap ApiResponse → 直接是 { total, pendingReview, confirmed, openTasks }
+    const s: any = await getAiStats()
+    Object.assign(kpiStats, s || {})
+  } catch {}
+}
 async function loadInitial() {
   try {
-    const [s, c] = await Promise.all([getAgentStatus(), getAgentContext(DEFAULT_CONTEXT_LIMIT)])
+    const [s, c] = await Promise.all([getAgentStatus(), getAgentContext(DEFAULT_CONTEXT_LIMIT), loadStats()])
     status.value = s || {}
     context.value = c || {}
   } catch (e: any) {
@@ -423,8 +604,8 @@ async function loadInitial() {
   }
 }
 
-onMounted(() => {
-  loadSessions()
+onMounted(async () => {
+  await loadSessions()
   loadInitial()
   // 自动刷新一次 runtime + 数据源（30s）
   window.setInterval(loadInitial, 30000)
@@ -610,6 +791,59 @@ onBeforeUnmount(() => { running.value = false })
   padding: 4px 8px;
   border-radius: 4px;
 }
+
+/* ============ KPI 仪表盘 ============ */
+.stats-bar {
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+  padding: 12px 24px;
+  background: #ffffff;
+  border-bottom: 1px solid #e2e8f0;
+  flex-shrink: 0;
+}
+.kpi-card {
+  flex: 1;
+  min-width: 0;
+  border-radius: 8px;
+  padding: 10px 14px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  display: flex; flex-direction: column; justify-content: center;
+  transition: box-shadow 0.2s;
+}
+.kpi-card:hover { box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06); }
+.kpi-label {
+  font-size: 11px;
+  color: #64748b;
+  font-weight: 500;
+  letter-spacing: 0.3px;
+}
+.kpi-value {
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.2;
+  margin-top: 2px;
+  color: #0f172a;
+  font-variant-numeric: tabular-nums;
+}
+.kpi-card.info   { border-color: #bae6fd; background: #f0f9ff; }
+.kpi-card.info   .kpi-value { color: #0369a1; }
+.kpi-card.warn   { border-color: #fde68a; background: #fffbeb; }
+.kpi-card.warn   .kpi-value { color: #b45309; }
+.kpi-card.ok     { border-color: #bbf7d0; background: #f0fdf4; }
+.kpi-card.ok     .kpi-value { color: #15803d; }
+.kpi-card.brand  { border-color: #c7d2fe; background: #eef2ff; }
+.kpi-card.brand  .kpi-value { color: #4338ca; }
+.kpi-refresh {
+  display: flex; align-items: center; justify-content: center;
+  width: 34px; border-radius: 8px;
+  border: 1px solid #e2e8f0; background: #fff;
+  color: #64748b; cursor: pointer;
+  transition: all 0.2s;
+  flex-shrink: 0;
+}
+.kpi-refresh:hover { color: #2563eb; border-color: #93c5fd; background: #eff6ff; }
 .drawer-toggle {
   display: flex; align-items: center; gap: 5px;
   padding: 6px 12px;
@@ -686,6 +920,7 @@ onBeforeUnmount(() => { running.value = false })
   flex: 1;
   overflow-y: auto;
   padding: 28px 24px;
+  background: #f1f3f5;
 }
 .chat-bubble {
   display: flex;
@@ -713,28 +948,145 @@ onBeforeUnmount(() => { running.value = false })
   padding: 12px 16px;
   border-radius: 14px;
   line-height: 1.7;
-  font-size: 13px;
+  font-size: 14px;
 }
 .chat-bubble.user .bubble-body {
-  background: #111827;
-  color: #fff;
+  background: #4f46e5;
+  color: #ffffff;
   border-top-right-radius: 4px;
+  box-shadow: 0 2px 8px rgba(79, 70, 229, 0.35);
 }
 .chat-bubble.assistant .bubble-body {
-  background: #fff;
-  color: #1f2937;
-  border: 1px solid #e5e7eb;
+  background: #ffffff;
+  color: #111827;
+  border: 1px solid #e2e8f0;
   border-top-left-radius: 4px;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06);
   white-space: pre-wrap;
   word-break: break-word;
 }
 .bubble-text { white-space: pre-wrap; word-break: break-word; }
+
+/* ---------- Markdown body (assistant bubble) ---------- */
+/* ---------- Tool-call trace cards (ReAct Agent visualization) ---------- */
+.tool-trace {
+  margin-bottom: 8px;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.tool-card {
+  font-size: 12px;
+  border: 1px solid #cbd5e1;
+  background: #f8fafc;
+  border-radius: 8px;
+  padding: 8px 10px;
+  transition: border-color 0.2s;
+}
+.tool-card.running {
+  border-color: #60a5fa;
+  background: #eff6ff;
+}
+.tool-card.done {
+  border-color: #86efac;
+  background: #f0fdf4;
+}
+.tool-card-head {
+  display: flex; align-items: center; gap: 6px;
+  font-family: 'SF Mono', Consolas, Menlo, monospace;
+}
+.tool-icon { font-size: 13px; }
+.tool-name {
+  font-weight: 600; color: #075985;
+  background: #bae6fd; padding: 1px 8px; border-radius: 4px;
+}
+.tool-card.done .tool-name { color: #15803d; background: #bbf7d0; }
+.tool-status { margin-left: auto; font-size: 11px; font-weight: 500; }
+.tool-status.running { color: #1d4ed8; animation: toolPulse 1.2s ease-in-out infinite; }
+.tool-status.done { color: #15803d; }
+@keyframes toolPulse { 0%,100% { opacity: 1 } 50% { opacity: 0.4 } }
+.tool-details { margin-top: 6px; border-top: 1px dashed #94a3b8; padding-top: 4px; }
+.tool-details summary {
+  cursor: pointer; color: #475569; font-size: 11px;
+  user-select: none;
+}
+.tool-details summary:hover { color: #1e293b; }
+.tool-details pre {
+  margin: 4px 0 0; font-size: 11px; line-height: 1.45;
+  background: #ffffff; border: 1px solid #cbd5e1; border-radius: 4px;
+  padding: 6px 8px; overflow-x: auto;
+  max-height: 220px;
+}
+
+.bubble-text.markdown-body {
+  white-space: normal;
+  line-height: 1.7;
+  font-size: 14px;
+  color: #0f172a;
+}
+.bubble-text.markdown-body.is-user { color: #ffffff; }
+.bubble-text.markdown-body :first-child { margin-top: 0; }
+.bubble-text.markdown-body :last-child  { margin-bottom: 0; }
+.bubble-text.markdown-body p    { margin: 6px 0; color: #0f172a; }
+.bubble-text.markdown-body h1,
+.bubble-text.markdown-body h2,
+.bubble-text.markdown-body h3,
+.bubble-text.markdown-body h4   { margin: 14px 0 6px; font-weight: 700; line-height: 1.4; color: #0f172a; }
+.bubble-text.markdown-body h1   { font-size: 17px; }
+.bubble-text.markdown-body h2   { font-size: 15px; border-bottom: 1px solid #cbd5e1; padding-bottom: 3px; }
+.bubble-text.markdown-body h3   { font-size: 14px; color: #1e3a8a; }
+.bubble-text.markdown-body h4   { font-size: 13px; color: #1e3a8a; }
+.bubble-text.markdown-body ul,
+.bubble-text.markdown-body ol   { margin: 4px 0; padding-left: 20px; color: #0f172a; }
+.bubble-text.markdown-body ul   { list-style: disc; }
+.bubble-text.markdown-body ol   { list-style: decimal; }
+.bubble-text.markdown-body li   { margin: 2px 0; color: #0f172a; }
+.bubble-text.markdown-body blockquote {
+  margin: 6px 0; padding: 6px 12px; border-left: 3px solid #4f46e5;
+  background: #eef2ff; color: #312e81; border-radius: 0 4px 4px 0;
+}
+.bubble-text.markdown-body code {
+  font-family: 'SF Mono', Consolas, Menlo, monospace;
+  font-size: 12px;
+  background: #f1f5f9;
+  border: 1px solid #cbd5e1;
+  border-radius: 3px;
+  padding: 1px 5px;
+  color: #9d174d;
+}
+.bubble-text.markdown-body pre {
+  margin: 8px 0; padding: 12px 14px;
+  background: #0f172a; border-radius: 6px; overflow-x: auto;
+}
+.bubble-text.markdown-body pre code {
+  background: transparent; border: none; padding: 0;
+  color: #e2e8f0; font-size: 12px; line-height: 1.55;
+}
+.bubble-text.markdown-body table {
+  margin: 8px 0; border-collapse: collapse; width: 100%;
+  font-size: 13px;
+}
+.bubble-text.markdown-body table th,
+.bubble-text.markdown-body table td {
+  border: 1px solid #cbd5e1; padding: 7px 10px; text-align: left;
+}
+.bubble-text.markdown-body table th {
+  background: #e2e8f0; font-weight: 700; color: #0f172a;
+}
+.bubble-text.markdown-body table tr:nth-child(even) td { background: #f8fafc; }
+.bubble-text.markdown-body hr {
+  border: none; border-top: 1px solid #cbd5e1; margin: 12px 0;
+}
+.bubble-text.markdown-body a {
+  color: #2563eb; text-decoration: none; font-weight: 500;
+}
+.bubble-text.markdown-body a:hover { text-decoration: underline; }
+.bubble-text.markdown-body strong { color: #0f172a; font-weight: 700; }
+.bubble-text.markdown-body em { color: #334155; }
 .bubble-time {
-  font-size: 10px;
-  color: #9ca3af;
+  font-size: 11px;
+  color: #64748b;
   margin-top: 6px;
 }
-.chat-bubble.user .bubble-time { text-align: right; }
+.chat-bubble.user .bubble-time { text-align: right; color: rgba(255,255,255,0.85); }
 
 /* typing */
 .typing {
