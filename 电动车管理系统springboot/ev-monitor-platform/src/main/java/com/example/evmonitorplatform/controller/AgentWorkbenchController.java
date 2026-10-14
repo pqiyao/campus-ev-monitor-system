@@ -70,5 +70,10 @@ public class AgentWorkbenchController {
         return ApiResponse.success(service.listSessions(limit));
     }
 
+    @DeleteMapping("/sessions/{sessionId}")
+    public ApiResponse<Boolean> deleteSession(@PathVariable String sessionId) {
+        return ApiResponse.success(service.deleteSession(sessionId));
+    }
+
     private static String asString(Object value) { return value == null ? null : String.valueOf(value); }
 }

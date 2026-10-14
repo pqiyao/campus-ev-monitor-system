@@ -90,6 +90,10 @@ ev-monitor:
       # 烟雾和明火属于安全事件，只进入人工复核，不映射为扣分违规类型。
   tcp:
     port: 9999
+  drone:
+    # 无人机执行器选择：simulated=确定性Java仿真(默认) | pybullet=PyBullet物理仿真(需启动 tools/pybullet-bridge)
+    executor: ${DRONE_EXECUTOR:simulated}
+    bridge-url: ${PYBULLET_BRIDGE_URL:http://127.0.0.1:9030}
   mqtt:
     broker: tcp://180.184.41.179:1883 # 改成远程服务器
     client-id: ev-monitor-backend

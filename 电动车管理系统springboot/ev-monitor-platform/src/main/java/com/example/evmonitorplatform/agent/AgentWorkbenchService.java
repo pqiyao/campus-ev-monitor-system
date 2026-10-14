@@ -998,6 +998,20 @@ public class AgentWorkbenchService {
         }
     }
 
+    /** 硬删一个会话（DB + 内存）。 */
+    public boolean deleteSession(String sessionId) {
+        if (sessionId == null || sessionId.isBlank()) return false;
+        try {
+            jdbcTemplate.update("DELETE FROM ai_assistant_message WHERE session_id = ?", sessionId);
+            jdbcTemplate.update("DELETE FROM ai_assistant_session WHERE session_id = ?", sessionId);
+        } catch (Exception ex) {
+            log.debug("deleteSession DB 跳过: {}", ex.getMessage());
+        }
+        sessionHistory.remove(sessionId);
+        sessionTitle.remove(sessionId);
+        return true;
+    }
+
     private String trimSlash(String value) {
         return value != null && value.endsWith("/") ? value.substring(0, value.length() - 1) : value;
     }

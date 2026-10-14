@@ -64,17 +64,6 @@
         </div>
       </header>
 
-      <!-- KPI 仪表盘（原治理工作台关键指标融合进来） -->
-      <section class="stats-bar">
-        <div v-for="c in kpiCards" :key="c.key" class="kpi-card" :class="c.tone">
-          <div class="kpi-label">{{ c.label }}</div>
-          <div class="kpi-value">{{ c.value }}</div>
-        </div>
-        <div class="kpi-refresh" @click="loadStats" title="刷新">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10"/><path d="M20.49 15A9 9 0 0 1 5.64 18.36L1 14"/></svg>
-        </div>
-      </section>
-
       <!-- 空态 -->
       <div v-if="messages.length === 0" class="chat-welcome">
         <div class="welcome-orb"></div>
@@ -237,9 +226,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { getAgentContext, getAgentHistory, getAgentStatus, getAiStats, listAgentSessions, runAgentStream } from '@/api/agent'
+import { deleteAgentSession, getAgentContext, getAgentHistory, getAgentStatus, listAgentSessions, runAgentStream } from '@/api/agent'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 
@@ -291,14 +280,6 @@ const currentSessionId = ref('')
 const drawerVisible = ref(true)
 const sessions = ref<SessionMeta[]>([])
 
-// KPI 仪表盘（融合自治理工作台）
-const kpiStats = reactive({ total: 0, pendingReview: 0, confirmed: 0, openTasks: 0 })
-const kpiCards = computed(() => [
-  { key: 'total', label: '接入事件', value: kpiStats.total, tone: 'info' },
-  { key: 'pendingReview', label: '待人工审', value: kpiStats.pendingReview, tone: 'warn' },
-  { key: 'confirmed', label: '已闭环', value: kpiStats.confirmed, tone: 'ok' },
-  { key: 'openTasks', label: '开放任务', value: kpiStats.openTasks, tone: 'brand' },
-])
 const messagesRef = ref<HTMLElement | null>(null)
 const inputRef = ref<HTMLTextAreaElement | null>(null)
 
@@ -414,7 +395,13 @@ function upsertSession(sessionId: string, title: string) {
   }
   saveSessions()
 }
-function deleteSession(sessionId: string) {
+async function deleteSession(sessionId: string) {
+  try {
+    // 先删后端 DB，再删前端列表——保证刷新不会回弹
+    await deleteAgentSession(sessionId)
+  } catch (e) {
+    console.warn('后端删除会话失败:', e)
+  }
   sessions.value = sessions.value.filter(s => s.sessionId !== sessionId)
   saveSessions()
   if (currentSessionId.value === sessionId) newChat()
@@ -587,16 +574,9 @@ async function scrollToBottom() {
 }
 
 // ============ 生命周期 ============
-async function loadStats() {
-  try {
-    // axios 已 unwrap ApiResponse → 直接是 { total, pendingReview, confirmed, openTasks }
-    const s: any = await getAiStats()
-    Object.assign(kpiStats, s || {})
-  } catch {}
-}
 async function loadInitial() {
   try {
-    const [s, c] = await Promise.all([getAgentStatus(), getAgentContext(DEFAULT_CONTEXT_LIMIT), loadStats()])
+    const [s, c] = await Promise.all([getAgentStatus(), getAgentContext(DEFAULT_CONTEXT_LIMIT)])
     status.value = s || {}
     context.value = c || {}
   } catch (e: any) {
@@ -791,59 +771,6 @@ onBeforeUnmount(() => { running.value = false })
   padding: 4px 8px;
   border-radius: 4px;
 }
-
-/* ============ KPI 仪表盘 ============ */
-.stats-bar {
-  display: flex;
-  align-items: stretch;
-  gap: 12px;
-  padding: 12px 24px;
-  background: #ffffff;
-  border-bottom: 1px solid #e2e8f0;
-  flex-shrink: 0;
-}
-.kpi-card {
-  flex: 1;
-  min-width: 0;
-  border-radius: 8px;
-  padding: 10px 14px;
-  border: 1px solid #e2e8f0;
-  background: #f8fafc;
-  display: flex; flex-direction: column; justify-content: center;
-  transition: box-shadow 0.2s;
-}
-.kpi-card:hover { box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06); }
-.kpi-label {
-  font-size: 11px;
-  color: #64748b;
-  font-weight: 500;
-  letter-spacing: 0.3px;
-}
-.kpi-value {
-  font-size: 22px;
-  font-weight: 700;
-  line-height: 1.2;
-  margin-top: 2px;
-  color: #0f172a;
-  font-variant-numeric: tabular-nums;
-}
-.kpi-card.info   { border-color: #bae6fd; background: #f0f9ff; }
-.kpi-card.info   .kpi-value { color: #0369a1; }
-.kpi-card.warn   { border-color: #fde68a; background: #fffbeb; }
-.kpi-card.warn   .kpi-value { color: #b45309; }
-.kpi-card.ok     { border-color: #bbf7d0; background: #f0fdf4; }
-.kpi-card.ok     .kpi-value { color: #15803d; }
-.kpi-card.brand  { border-color: #c7d2fe; background: #eef2ff; }
-.kpi-card.brand  .kpi-value { color: #4338ca; }
-.kpi-refresh {
-  display: flex; align-items: center; justify-content: center;
-  width: 34px; border-radius: 8px;
-  border: 1px solid #e2e8f0; background: #fff;
-  color: #64748b; cursor: pointer;
-  transition: all 0.2s;
-  flex-shrink: 0;
-}
-.kpi-refresh:hover { color: #2563eb; border-color: #93c5fd; background: #eff6ff; }
 .drawer-toggle {
   display: flex; align-items: center; gap: 5px;
   padding: 6px 12px;
@@ -1016,71 +943,9 @@ onBeforeUnmount(() => { running.value = false })
   max-height: 220px;
 }
 
-.bubble-text.markdown-body {
-  white-space: normal;
-  line-height: 1.7;
-  font-size: 14px;
-  color: #0f172a;
-}
-.bubble-text.markdown-body.is-user { color: #ffffff; }
-.bubble-text.markdown-body :first-child { margin-top: 0; }
-.bubble-text.markdown-body :last-child  { margin-bottom: 0; }
-.bubble-text.markdown-body p    { margin: 6px 0; color: #0f172a; }
-.bubble-text.markdown-body h1,
-.bubble-text.markdown-body h2,
-.bubble-text.markdown-body h3,
-.bubble-text.markdown-body h4   { margin: 14px 0 6px; font-weight: 700; line-height: 1.4; color: #0f172a; }
-.bubble-text.markdown-body h1   { font-size: 17px; }
-.bubble-text.markdown-body h2   { font-size: 15px; border-bottom: 1px solid #cbd5e1; padding-bottom: 3px; }
-.bubble-text.markdown-body h3   { font-size: 14px; color: #1e3a8a; }
-.bubble-text.markdown-body h4   { font-size: 13px; color: #1e3a8a; }
-.bubble-text.markdown-body ul,
-.bubble-text.markdown-body ol   { margin: 4px 0; padding-left: 20px; color: #0f172a; }
-.bubble-text.markdown-body ul   { list-style: disc; }
-.bubble-text.markdown-body ol   { list-style: decimal; }
-.bubble-text.markdown-body li   { margin: 2px 0; color: #0f172a; }
-.bubble-text.markdown-body blockquote {
-  margin: 6px 0; padding: 6px 12px; border-left: 3px solid #4f46e5;
-  background: #eef2ff; color: #312e81; border-radius: 0 4px 4px 0;
-}
-.bubble-text.markdown-body code {
-  font-family: 'SF Mono', Consolas, Menlo, monospace;
-  font-size: 12px;
-  background: #f1f5f9;
-  border: 1px solid #cbd5e1;
-  border-radius: 3px;
-  padding: 1px 5px;
-  color: #9d174d;
-}
-.bubble-text.markdown-body pre {
-  margin: 8px 0; padding: 12px 14px;
-  background: #0f172a; border-radius: 6px; overflow-x: auto;
-}
-.bubble-text.markdown-body pre code {
-  background: transparent; border: none; padding: 0;
-  color: #e2e8f0; font-size: 12px; line-height: 1.55;
-}
-.bubble-text.markdown-body table {
-  margin: 8px 0; border-collapse: collapse; width: 100%;
-  font-size: 13px;
-}
-.bubble-text.markdown-body table th,
-.bubble-text.markdown-body table td {
-  border: 1px solid #cbd5e1; padding: 7px 10px; text-align: left;
-}
-.bubble-text.markdown-body table th {
-  background: #e2e8f0; font-weight: 700; color: #0f172a;
-}
-.bubble-text.markdown-body table tr:nth-child(even) td { background: #f8fafc; }
-.bubble-text.markdown-body hr {
-  border: none; border-top: 1px solid #cbd5e1; margin: 12px 0;
-}
-.bubble-text.markdown-body a {
-  color: #2563eb; text-decoration: none; font-weight: 500;
-}
-.bubble-text.markdown-body a:hover { text-decoration: underline; }
-.bubble-text.markdown-body strong { color: #0f172a; font-weight: 700; }
-.bubble-text.markdown-body em { color: #334155; }
+/* Markdown 正文样式已移至文件末尾的「非 scoped」样式块。
+   原因：AI 回复通过 v-html 注入，scoped 的 data-v-* 属性不会加到注入的
+   <p>/<li>/<td> 等节点上，导致这些规则全部失效、正文被全局 reset 覆盖成浅灰。 */
 .bubble-time {
   font-size: 11px;
   color: #64748b;
@@ -1288,4 +1153,78 @@ onBeforeUnmount(() => { running.value = false })
 .runtime-dl dt { color: #9ca3af; }
 .runtime-dl dd { margin: 0; color: #374151; text-align: right; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .runtime-dl dd.mono { font-family: 'JetBrains Mono', Consolas, monospace; font-size: 10px; }
+</style>
+
+<!--
+  注意：下面这个样式块**故意不加 scoped**。
+  AI 回复由 v-html 渲染，注入的 <p>/<li>/<td>/<strong> 等节点不会带 data-v-* 属性，
+  scoped 规则无法命中它们，正文会被全局 reset 覆盖。改用非 scoped 块并按
+  .bubble-text.markdown-body 前缀（两个 class，权重足够）保证正文清晰可读。
+-->
+<style>
+.bubble-text.markdown-body {
+  white-space: normal;
+  line-height: 1.75;
+  font-size: 14px;
+  color: #1f2937;
+}
+.bubble-text.markdown-body.is-user { color: #ffffff; }
+.bubble-text.markdown-body > :first-child { margin-top: 0; }
+.bubble-text.markdown-body > :last-child  { margin-bottom: 0; }
+.bubble-text.markdown-body p    { margin: 8px 0;  color: #1f2937; }
+.bubble-text.markdown-body h1,
+.bubble-text.markdown-body h2,
+.bubble-text.markdown-body h3,
+.bubble-text.markdown-body h4   { margin: 16px 0 8px; font-weight: 700; line-height: 1.4; color: #111827; }
+.bubble-text.markdown-body h1   { font-size: 17px; }
+.bubble-text.markdown-body h2   { font-size: 15px; border-bottom: 1px solid #cbd5e1; padding-bottom: 3px; }
+.bubble-text.markdown-body h3   { font-size: 14px; color: #1e3a8a; }
+.bubble-text.markdown-body h4   { font-size: 13px; color: #1e3a8a; }
+.bubble-text.markdown-body ul,
+.bubble-text.markdown-body ol   { margin: 6px 0; padding-left: 22px; color: #1f2937; }
+.bubble-text.markdown-body ul   { list-style: disc; }
+.bubble-text.markdown-body ol   { list-style: decimal; }
+.bubble-text.markdown-body li   { margin: 4px 0; color: #1f2937; }
+.bubble-text.markdown-body blockquote {
+  margin: 8px 0; padding: 6px 12px; border-left: 3px solid #4f46e5;
+  background: #eef2ff; color: #312e81; border-radius: 0 4px 4px 0;
+}
+.bubble-text.markdown-body code {
+  font-family: 'SF Mono', Consolas, Menlo, monospace;
+  font-size: 12px;
+  background: #f1f5f9;
+  border: 1px solid #cbd5e1;
+  border-radius: 3px;
+  padding: 1px 5px;
+  color: #9d174d;
+}
+.bubble-text.markdown-body pre {
+  margin: 8px 0; padding: 12px 14px;
+  background: #0f172a; border-radius: 6px; overflow-x: auto;
+}
+.bubble-text.markdown-body pre code {
+  background: transparent; border: none; padding: 0;
+  color: #e2e8f0; font-size: 12px; line-height: 1.55;
+}
+.bubble-text.markdown-body table {
+  margin: 8px 0; border-collapse: collapse; width: 100%;
+  font-size: 13px;
+}
+.bubble-text.markdown-body table th,
+.bubble-text.markdown-body table td {
+  border: 1px solid #cbd5e1; padding: 7px 10px; text-align: left; color: #1f2937;
+}
+.bubble-text.markdown-body table th {
+  background: #e2e8f0; font-weight: 700; color: #111827;
+}
+.bubble-text.markdown-body table tr:nth-child(even) td { background: #f8fafc; }
+.bubble-text.markdown-body hr {
+  border: none; border-top: 1px solid #cbd5e1; margin: 12px 0;
+}
+.bubble-text.markdown-body a {
+  color: #2563eb; text-decoration: none; font-weight: 500;
+}
+.bubble-text.markdown-body a:hover { text-decoration: underline; }
+.bubble-text.markdown-body strong { color: #111827; font-weight: 700; }
+.bubble-text.markdown-body em { color: #334155; }
 </style>

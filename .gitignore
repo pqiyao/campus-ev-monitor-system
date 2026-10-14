@@ -42,6 +42,9 @@ runtime-logs/
 dsh-campus-home/sessions/
 dsh-campus-home/storages/
 dsh-campus-home/.anonymous-user-id
+tools/**/.venv/
+tools/**/*.log
+开源参考/
 
 # Large archives and media (keep source code and documentation in Git)
 *.zip

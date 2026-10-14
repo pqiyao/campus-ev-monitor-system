@@ -16,6 +16,7 @@ export const getAgentContext = (limit = 30) => request.get('/agent/context', { p
 export const runAgent = (payload: { goal: string; sessionId?: string; preset?: string; limit?: number }) => request.post('/agent/runs', payload)
 export const getAgentHistory = (sessionId: string) => request.get(`/agent/sessions/${encodeURIComponent(sessionId)}/history`)
 export const listAgentSessions = (limit = 50) => request.get('/agent/sessions', { params: { limit } })
+export const deleteAgentSession = (sessionId: string) => request.delete(`/agent/sessions/${encodeURIComponent(sessionId)}`)
 
 // 复用治理工作台的 KPI 统计接口
 export const getAiStats = () => request.get('/ai/stats')
