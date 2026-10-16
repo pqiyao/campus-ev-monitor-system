@@ -63,9 +63,11 @@ ev:
 
 ev-monitor:
   campus:
-    name: ${EV_CAMPUS_NAME:桂林理工大学屏风校区}
-    longitude: ${EV_CAMPUS_LONGITUDE:110.3239130}
-    latitude: ${EV_CAMPUS_LATITUDE:25.2875179}
+    # 与管理端 ACTIVE_CAMPUS（衡阳师范学院东校区）保持一致；生产环境可继续用环境变量覆盖。
+    # 公开 OSM 校园边界（way 280571392）转换到百度坐标后的中心点。
+    name: ${EV_CAMPUS_NAME:衡阳师范学院东校区}
+    longitude: ${EV_CAMPUS_LONGITUDE:112.6835772}
+    latitude: ${EV_CAMPUS_LATITUDE:26.8872727}
   ai:
     # mock 模式用于本地演示；接入 OpenAI 兼容中转站时设为 gpt 并在环境变量注入密钥
     mode: ${AI_MODE:gpt}
@@ -91,9 +93,17 @@ ev-monitor:
   tcp:
     port: 9999
   drone:
-    # 无人机执行器选择：simulated=确定性Java仿真(默认) | pybullet=PyBullet物理仿真(需启动 tools/pybullet-bridge)
-    executor: ${DRONE_EXECUTOR:simulated}
+    # 无人机执行器选择：simulated=确定性Java仿真 | pybullet=PyBullet物理仿真(需启动 tools/pybullet-bridge)
+    executor: ${DRONE_EXECUTOR:pybullet}
     bridge-url: ${PYBULLET_BRIDGE_URL:http://127.0.0.1:9030}
+  coverage:
+    # 全覆盖航线规划器：Fields2Cover 牛耕式覆盖（需启动 tools/f2c-bridge/start-f2c-bridge-wsl.sh）
+    # 桥接不可用时自动回退到风险网格贪心航线。
+    enabled: ${COVERAGE_PLANNER_ENABLED:true}
+    bridge-url: ${F2C_BRIDGE_URL:http://127.0.0.1:9031}
+    cov-width: ${COVERAGE_WIDTH_M:42} # 校园道路级覆盖带宽（米）
+    min-radius: ${COVERAGE_MIN_RADIUS_M:10} # 最小转弯半径（米）
+    sample-spacing: ${COVERAGE_SAMPLE_SPACING_M:24} # 输出航点抽稀间距（米）
   mqtt:
     broker: tcp://180.184.41.179:1883 # 改成远程服务器
     client-id: ev-monitor-backend

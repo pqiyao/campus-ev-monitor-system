@@ -20,7 +20,6 @@ const route: Route[] = [{
   }, {
     path: 'patrol',
     component: createNameComponent(() => import('@/views/main/patrol/index.vue')),
-    hideMenu: true,
     meta: { title: '低空巡检指挥台', icon: 'sfont system-monitor' }
   }]
 }]

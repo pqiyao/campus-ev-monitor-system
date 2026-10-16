@@ -1,0 +1,20 @@
+# 启动全部服务（推荐）
+.\start-all.ps1
+
+# 改了后端代码后，重新编译再启动
+.\start-all.ps1 -Rebuild
+
+# 只启动后端 + 前端（不需要桥接仿真时）
+.\start-all.ps1 -SkipBridge
+
+# 只启动后端
+.\start-all.ps1 -BackendOnly
+
+# 只启动前端
+.\start-all.ps1 -FrontendOnly
+
+# 不启动 DSH 运行时
+.\start-all.ps1 -NoDsh
+
+# 停止全部服务
+.\stop-all.ps1

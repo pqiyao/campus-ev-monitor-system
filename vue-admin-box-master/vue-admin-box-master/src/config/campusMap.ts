@@ -17,8 +17,9 @@ export const CAMPUS_PRESETS: Readonly<Record<CampusKey, CampusPreset>> = Object.
   }),
   hyNormalEast: Object.freeze({
     name: '衡阳师范学院东校区',
-    lng: 112.6827629,
-    lat: 26.8860959,
+    // OSM 衡阳师范学院（东校区）边界 way 280571392 转换为百度坐标后的中心点。
+    lng: 112.6835772,
+    lat: 26.8872727,
     platePrefix: '湘D'
   })
 })

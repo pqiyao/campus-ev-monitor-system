@@ -63,6 +63,7 @@ export default ({ command }: ConfigEnv): UserConfigExport => {
       },
     },
     build: {
+      target: 'esnext',
       rollupOptions: {
         output: {
           manualChunks: {

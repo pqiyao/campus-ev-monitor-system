@@ -39,7 +39,14 @@ WIND_FAULT_FORCE = 6.0  # 牛顿，侧向随机风扰
 # 位置误差 e 的期望倾角 arctan(0.4e/mg)——4m 误差→80°倾角→所需升力1.5N超推力上限→螺旋坠机；
 # 0.3m 误差→约24°倾角，留足余量。纯跟踪前置距离必须维持在此量级。
 PURE_PURSUIT_LOOKAHEAD = 0.3
-CRUISE_SPEED = 1.5  # 巡航限速(m/s)：经 target_vel 前馈限幅，到点前按 0.6*dist 收敛减速
+# 运行时参数（由 main 按命令行写入）：
+#  cruise_speed 巡航限速(m/s)，默认 1.5——DSL PID 包线实测安全值；
+#  过大的 target_vel 前馈会命令超推力包线的倾角导致失稳坠机，提速请配合 GUI 实测。
+#  time_scale 墙钟快放倍数：物理积分仍为真实刚体动力学，仅控制帧按 1/time_scale 节流，
+#  无头模式默认 4.0 倍速（330m 任务墙钟约 55s，观感≈6m/s，遥测连续产出）；GUI 恒 1.0。
+RUNTIME = {"cruise_speed": 1.5, "time_scale": 4.0}
+def cruise_speed():
+    return RUNTIME["cruise_speed"]
 
 MISSIONS = {}
 LOCK = threading.Lock()
@@ -122,12 +129,13 @@ class Mission:
         if dist < 1e-6:
             return pos.copy(), np.zeros(3)
         u = dirv / dist
-        return pos + u * min(PURE_PURSUIT_LOOKAHEAD, dist), u * min(CRUISE_SPEED, 0.6 * dist)
+        return pos + u * min(PURE_PURSUIT_LOOKAHEAD, dist), u * min(cruise_speed(), 0.6 * dist)
 
     def run(self):
         try:
             home_hover = np.array([0.0, 0.0, 30.0])
             while self.running and not self.completed:
+                frame_start = time.perf_counter()
                 obs, _, _, _, _ = self.env.step(self.action)
                 state = obs[0]
                 pos = state[0:3]
@@ -200,6 +208,13 @@ class Mission:
                     self.env.render()
                     from gym_pybullet_drones.utils.utils import sync
                     sync(int(elapsed * self.env.CTRL_FREQ), self.started_at, self.env.CTRL_TIMESTEP)
+                else:
+                    # 无头模式墙钟节流：物理积分仍是每帧 CTRL_TIMESTEP 真实动力学，
+                    # 仅让帧间隔 = CTRL_TIMESTEP/time_scale，遥测随时间连续产出（不再秒完任务）
+                    frame_budget = self.env.CTRL_TIMESTEP / max(1.0, RUNTIME["time_scale"])
+                    frame_cost = time.perf_counter() - frame_start
+                    if frame_cost < frame_budget:
+                        time.sleep(frame_budget - frame_cost)
             self.env.close()
         except Exception as ex:  # 仿真线程异常上报
             self.push_event("FAILED", detail=f"PyBullet仿真异常: {ex}")
@@ -351,7 +366,13 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=9030)
     parser.add_argument("--host", default="0.0.0.0", help="监听地址，WSL 内建议 0.0.0.0 便于 Windows 侧经 NAT 访问")
     parser.add_argument("--gui", action="store_true", help="显示 PyBullet 3D 仿真画面（路演可视化）")
+    parser.add_argument("--speed", type=float, default=1.5, help="巡航限速 m/s（默认1.5，DSL PID 包线实测安全值）")
+    parser.add_argument("--time-scale", type=float, default=4.0,
+                        help="无头模式墙钟快放倍数（默认4.0，物理动力学不变；GUI模式强制1.0实时）")
     BRIDGE_ARGS = parser.parse_args()
+    RUNTIME["cruise_speed"] = max(1.0, BRIDGE_ARGS.speed)
+    RUNTIME["time_scale"] = 1.0 if BRIDGE_ARGS.gui else max(1.0, BRIDGE_ARGS.time_scale)
     server = ThreadingHTTPServer((BRIDGE_ARGS.host, BRIDGE_ARGS.port), BridgeHandler)
-    print(f"[bridge] PyBullet 无人机桥接服务已启动: http://{BRIDGE_ARGS.host}:{BRIDGE_ARGS.port} gui={BRIDGE_ARGS.gui}")
+    print(f"[bridge] PyBullet 无人机桥接服务已启动: http://{BRIDGE_ARGS.host}:{BRIDGE_ARGS.port} "
+          f"gui={BRIDGE_ARGS.gui} speed={RUNTIME['cruise_speed']}m/s timeScale={RUNTIME['time_scale']}x")
     server.serve_forever()

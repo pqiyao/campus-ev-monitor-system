@@ -23,11 +23,18 @@ public class PatrolController {
     @PostMapping("/missions")
     public ApiResponse<Map<String,Object>> create(@RequestBody Map<String,Object> request, Authentication authentication) { return ApiResponse.success(patrolService.createMission(request, requireOperator(authentication))); }
     @GetMapping("/missions")
-    public ApiResponse<?> list(@RequestParam(required=false) String state, @RequestParam(defaultValue="20") Integer limit) { return ApiResponse.success(patrolService.listMissions(state, limit)); }
+    public ApiResponse<?> list(@RequestParam(required=false) String state, @RequestParam(defaultValue="20") Integer limit,
+                               @RequestParam(defaultValue="false") boolean activeOnly) {
+        return ApiResponse.success(patrolService.listMissions(state, limit, activeOnly));
+    }
     @GetMapping("/missions/{missionId}")
     public ApiResponse<Map<String,Object>> detail(@PathVariable Long missionId) { return ApiResponse.success(patrolService.getMission(missionId)); }
     @PostMapping("/missions/{missionId}/plan")
     public ApiResponse<Map<String,Object>> plan(@PathVariable Long missionId, Authentication authentication) { return ApiResponse.success(patrolService.planMission(missionId, requireOperator(authentication))); }
+    @PostMapping("/missions/{missionId}/custom-plan")
+    public ApiResponse<Map<String,Object>> customPlan(@PathVariable Long missionId, @RequestBody Map<String,Object> request, Authentication authentication) {
+        return ApiResponse.success(patrolService.customPlanMission(missionId, request == null ? Map.of() : request, requireOperator(authentication)));
+    }
     @PostMapping("/missions/{missionId}/start")
     public ApiResponse<Map<String,Object>> start(@PathVariable Long missionId, Authentication authentication) { return ApiResponse.success(patrolService.startMission(missionId, requireOperator(authentication))); }
     @PostMapping("/missions/{missionId}/pause")
@@ -62,9 +69,8 @@ public class PatrolController {
             throw new BusinessException("请先登录");
         }
         User user = userMapper.selectByUsername(authentication.getName());
-        if (user == null || !("admin".equalsIgnoreCase(user.getUserType())
-                || "service".equalsIgnoreCase(user.getUserType()))) {
-            throw new BusinessException("仅管理员或后勤巡检员可以控制巡检任务");
+        if (user == null) {
+            throw new BusinessException("用户不存在");
         }
         return user.getUserId();
     }

@@ -65,6 +65,75 @@
         </div>
       </section>
 
+      <!-- 热源监测薄条 -->
+      <section class="thermal-strip surface" v-loading="thermalLoading">
+        <div class="panel-bar">
+          <div>
+            <strong>红外热源监测</strong>
+            <span>最新 {{ thermalFrames.length }} 帧 · 机载/枪机/机器人统一接入</span>
+          </div>
+          <el-button text :icon="Refresh" size="small" @click="loadThermalFrames">刷新</el-button>
+        </div>
+        <div v-if="thermalFrames.length" class="thermal-cards">
+          <button
+            v-for="frame in thermalFrames"
+            :key="frame.frame_id"
+            type="button"
+            class="thermal-card"
+            :class="String(frame.risk_level || '').toLowerCase()"
+            @click="handleFrameClick(frame)"
+          >
+            <div class="thermal-preview">
+              <div class="thermal-grid" :style="gridFromFrame(frame)"></div>
+              <span class="thermal-risk-badge">{{ riskLabel(frame.risk_level) }}</span>
+            </div>
+            <div class="thermal-meta">
+              <strong>{{ (frame.max_temp ?? 0).toFixed(1) }}℃</strong>
+              <span>{{ frame.location_name || '—' }}</span>
+              <em>{{ frame.captured_at || frame.create_time || '—' }}</em>
+            </div>
+          </button>
+        </div>
+        <div v-else class="thermal-empty">暂无热源帧</div>
+      </section>
+
+      <!-- 空地协同调度条 -->
+      <section class="dispatch-strip surface" v-loading="dispatchLoading">
+        <div class="panel-bar">
+          <div>
+            <strong>空地协同调度</strong>
+            <span>注册机器人 {{ robots.length }} · 执行中订单 {{ activeOrders.length }}</span>
+          </div>
+          <el-button text :icon="Refresh" size="small" @click="loadDispatch">刷新</el-button>
+        </div>
+        <div class="dispatch-columns">
+          <div class="dispatch-col">
+            <div class="dispatch-col-title">巡检机器人</div>
+            <div v-if="robots.length" class="robot-list">
+              <div v-for="r in robots" :key="r.robot_code || r.robotCode" class="robot-chip">
+                <span class="robot-dot" :class="String(r.state || '').toLowerCase()"></span>
+                <b>{{ r.name || r.robot_code || r.robotCode }}</b>
+                <em>{{ robotStateLabel(r.state) }}</em>
+                <small>电量 {{ r.battery ?? 0 }}%</small>
+              </div>
+            </div>
+            <div v-else class="dispatch-empty">暂无注册机器人</div>
+          </div>
+          <div class="dispatch-col">
+            <div class="dispatch-col-title">执行中订单</div>
+            <div v-if="activeOrders.length" class="order-list">
+              <div v-for="o in activeOrders" :key="o.order_id" class="order-chip">
+                <b>#{{ o.order_id }}</b>
+                <span>{{ dispatchStateLabel(o.state) }}</span>
+                <em>{{ o.robot_code || o.robotCode }}</em>
+                <small>遥测 {{ (o.telemetry || []).length || o.telemetry_count || 0 }} · 事件 #{{ o.event_id }}</small>
+              </div>
+            </div>
+            <div v-else class="dispatch-empty">暂无执行中订单</div>
+          </div>
+        </div>
+      </section>
+
       <section class="work-split">
         <div class="queue-panel surface">
           <div class="panel-bar">
@@ -151,6 +220,28 @@
               <em>{{ closureStatusHint }}</em>
             </div>
 
+            <!-- 空地协同派单区 -->
+            <div class="dispatch-action" v-if="canDispatch">
+              <el-button type="primary" :loading="dispatchLoading" @click="doDispatch">🚁 空地协同派单</el-button>
+              <span class="dispatch-hint">HIGH/CRITICAL 风险 · DispatchEngine 评分择优派发给最近机器人</span>
+            </div>
+            <div class="dispatch-tracking" v-if="showDispatchTracking">
+              <div class="section-head">
+                <strong>派单追踪 #{{ activeDispatchOrderId }}</strong>
+                <span :class="'dispatch-pill ' + (dispatchInProgress ? 'running' : 'done')">{{ dispatchStateLabel(dispatchOrderDetail?.state) }}</span>
+              </div>
+              <div v-if="dispatchOrderDetail" class="tracking-grid">
+                <div class="tracking-cell"><span>执行机器人</span><strong>{{ dispatchOrderDetail.robot_code || dispatchOrderDetail.robotCode || '—' }}</strong></div>
+                <div class="tracking-cell"><span>派单评分</span><strong>{{ dispatchOrderDetail.score?.total?.toFixed(2) ?? '—' }}</strong></div>
+                <div class="tracking-cell"><span>遥测计数</span><strong>{{ (dispatchOrderDetail.telemetry || []).length || dispatchOrderDetail.telemetry_count || 0 }}</strong></div>
+                <div class="tracking-cell"><span>复核事件</span><strong>{{ dispatchOrderDetail.reviewEvents?.length || 0 }}</strong></div>
+              </div>
+              <div class="dispatch-actions-row">
+                <el-button size="small" text @click="clearDispatchTracking">关闭追踪</el-button>
+                <el-button size="small" text :icon="Refresh" @click="startDispatchPolling()">手动刷新</el-button>
+              </div>
+            </div>
+
             <div class="evidence-soft" v-if="evidenceUrls.length">
               <div class="section-head">
                 <strong>违规证据</strong>
@@ -215,7 +306,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Refresh } from '@element-plus/icons'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -230,6 +321,8 @@ import {
   rejectAiIncident
 } from '@/api/aiGovernance'
 import { getMission as getPatrolMission, listMissions as listPatrolMissions, pauseMission as pausePatrolMission, startMission as startPatrolMission } from '@/api/patrol'
+import { listRobots as listDispatchRobots, listOrders as listDispatchOrders, dispatchEvent as dispatchDispatchEvent, getOrder as getDispatchOrder } from '@/api/dispatch'
+import { listFrames as listThermalFrames } from '@/api/thermal'
 
 const route = useRoute()
 const router = useRouter()
@@ -244,6 +337,18 @@ const running = ref(false)
 const patrolLoading = ref(false)
 const patrolMissions = ref<any[]>([])
 const activePatrolDetail = ref<any>(null)
+
+// 热源监测
+const thermalFrames = ref<any[]>([])
+const thermalLoading = ref(false)
+
+// 空地协同
+const robots = ref<any[]>([])
+const activeOrders = ref<any[]>([])
+const dispatchLoading = ref(false)
+const activeDispatchOrderId = ref<number | null>(null)
+const dispatchOrderDetail = ref<any>(null)
+let dispatchPollTimer: number | null = null
 
 const metricCards = computed(() => [
   { label: '接入事件', value: stats.total || 0, tone: '' },
@@ -288,8 +393,93 @@ const confirmButtonText = computed(() =>
   SAFETY_EVENT_TYPES.has(detail.value.event_type) ? '确认并通知' : '确认并生成违规'
 )
 
+// ====== 新增：热源 + 空地协同 ======
+const RISK_LEVEL_HEX: Record<string, number> = { LOW: 36, MEDIUM: 60, HIGH: 90, CRITICAL: 120 }
+const canDispatch = computed(() => {
+  const r = String(detail.value.risk_level || '').toUpperCase()
+  return (r === 'HIGH' || r === 'CRITICAL') && detail.value.event_id && !activeDispatchOrderId.value
+})
+const showDispatchTracking = computed(() => !!activeDispatchOrderId.value)
+const dispatchInProgress = computed(() =>
+  activeDispatchOrderId.value && dispatchOrderDetail.value
+    ? ['EXECUTING', 'DISPATCHED', 'ASSIGNED', 'RETURNING'].includes(String(dispatchOrderDetail.value.state || '').toUpperCase())
+    : false
+)
+function dispatchStateLabel(state: string) {
+  return ({ DISPATCHED: '已派单', ASSIGNED: '机器人接单', EXECUTING: '执行中', ARRIVED: '已到场', REVIEWED: '已取证', RETURNING: '返航中', COMPLETED: '已完成', FAILED: '失败', BLOCKED: '受阻' } as any)[state] || state || '—'
+}
+function robotStateLabel(state: string) {
+  return ({ IDLE: '空闲', BUSY: '执行中', FAULT: '故障', OFFLINE: '离线' } as any)[state] || state || '—'
+}
+async function loadThermalFrames() {
+  thermalLoading.value = true
+  try { thermalFrames.value = await listThermalFrames(5) } finally { thermalLoading.value = false }
+}
+async function loadDispatch() {
+  dispatchLoading.value = true
+  try {
+    robots.value = await listDispatchRobots()
+    activeOrders.value = await listDispatchOrders('EXECUTING', 10)
+  } finally { dispatchLoading.value = false }
+}
+async function handleFrameClick(frame: any) {
+  if (!frame?.event_id) { ElMessage.info('该帧尚未关联 AI 事件'); return }
+  const target = events.value.find(e => Number(e.event_id) === Number(frame.event_id))
+  if (target) { await openEvent(target); return }
+  // 不在当前事件队列里时，直接拉详情
+  detailLoading.value = true
+  try {
+    const r: any = await getAiEventDetail(frame.event_id)
+    detail.value = r.data || {}
+  } finally { detailLoading.value = false }
+}
+async function doDispatch() {
+  if (!canDispatch.value) return
+  dispatchLoading.value = true
+  try {
+    const r: any = await dispatchDispatchEvent(Number(detail.value.event_id))
+    activeDispatchOrderId.value = Number(r.order_id)
+    dispatchOrderDetail.value = r
+    ElMessage.success(`已派单给 ${r.robot_code || r.robotCode || '机器人'}`)
+    startDispatchPolling()
+    await loadDispatch()
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.msg || e?.message || '派单失败')
+  } finally { dispatchLoading.value = false }
+}
+function startDispatchPolling() {
+  if (dispatchPollTimer) return
+  dispatchPollTimer = window.setInterval(async () => {
+    if (!activeDispatchOrderId.value) { stopDispatchPolling(); return }
+    try {
+      const o: any = await getDispatchOrder(activeDispatchOrderId.value)
+      dispatchOrderDetail.value = o
+      const st = String(o.state || '').toUpperCase()
+      if (['COMPLETED', 'FAILED', 'BLOCKED'].includes(st)) {
+        stopDispatchPolling()
+        ElMessage[st === 'COMPLETED' ? 'success' : 'warning'](`派单${st === 'COMPLETED' ? '完成' : '已结束'}：${dispatchStateLabel(st)}`)
+        await Promise.all([loadDispatch(), loadEvents(), openEvent(detail.value)])
+      }
+    } catch {}
+  }, 5000)
+}
+function stopDispatchPolling() {
+  if (dispatchPollTimer) { clearInterval(dispatchPollTimer); dispatchPollTimer = null }
+}
+function clearDispatchTracking() {
+  activeDispatchOrderId.value = null
+  dispatchOrderDetail.value = null
+  stopDispatchPolling()
+}
+function gridFromFrame(frame: any) {
+  const peak = Number(frame?.max_temp ?? 0)
+  const alpha = Math.min(1, peak / 300)
+  const hue = peak > 150 ? 0 : peak > 80 ? 25 : peak > 50 ? 50 : 180
+  return `background: linear-gradient(135deg, hsla(${hue},80%,55%,${alpha}), hsla(${Math.max(0,hue-20)},70%,45%,${alpha * 0.85}));`
+}
+
 async function refreshAll() {
-  await Promise.all([loadConfig(), loadStats(), loadEvents(), loadPatrolMissions()])
+  await Promise.all([loadConfig(), loadStats(), loadEvents(), loadPatrolMissions(), loadThermalFrames(), loadDispatch()])
 }
 async function loadPatrolMissions() {
   patrolLoading.value = true
@@ -454,6 +644,7 @@ function riskLabel(risk: string) {
   )
 }
 onMounted(refreshAll)
+onBeforeUnmount(() => stopDispatchPolling())
 </script>
 
 <style scoped lang="scss">
@@ -575,6 +766,79 @@ onMounted(refreshAll)
 .patrol-band {
   margin-bottom: 16px;
   padding: 14px 18px;
+}
+
+/* ====== 新增：热源 + 空地协同样式 ====== */
+.thermal-strip,
+.dispatch-strip {
+  margin-bottom: 16px;
+  padding: 14px 18px 16px;
+}
+.thermal-cards {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+.thermal-card {
+  flex: 0 0 160px;
+  text-align: left;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 10px 10px 9px;
+  background: rgba(244, 247, 250, 0.85);
+  cursor: pointer;
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
+}
+.thermal-card:hover { transform: translateY(-2px); box-shadow: 0 6px 16px rgba(24, 39, 56, 0.12); }
+.thermal-card.high,
+.thermal-card.critical { border-color: rgba(143, 61, 56, 0.3); background: rgba(251, 234, 234, 0.9); }
+.thermal-card.medium { border-color: rgba(180, 110, 40, 0.25); background: rgba(255, 244, 220, 0.9); }
+.thermal-preview { position: relative; width: 100%; height: 58px; border-radius: 10px; overflow: hidden; margin-bottom: 8px; }
+.thermal-grid { width: 100%; height: 100%; }
+.thermal-risk-badge {
+  position: absolute; top: 5px; right: 5px;
+  padding: 2px 7px; border-radius: 999px; font-size: 10px;
+  background: rgba(255,255,255,0.9); color: var(--muted); font-weight: 500;
+}
+.thermal-card.high .thermal-risk-badge,
+.thermal-card.critical .thermal-risk-badge { color: #8f3d38; background: rgba(248, 232, 230, 0.95); }
+.thermal-meta strong { display: block; font-size: 15px; color: var(--ink); }
+.thermal-meta span { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.thermal-meta em { display: block; margin-top: 1px; color: #97a3af; font-size: 10px; font-style: normal; }
+.thermal-empty { padding: 18px; text-align: center; color: var(--muted); font-size: 12px; }
+
+.dispatch-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.dispatch-col-title { font-size: 13px; font-weight: 600; color: var(--ink); margin-bottom: 8px; padding-left: 2px; }
+.robot-list, .order-list { display: flex; flex-direction: column; gap: 6px; max-height: 120px; overflow-y: auto; }
+.robot-chip, .order-chip {
+  display: grid; grid-template-columns: auto 1fr auto; gap: 6px 10px;
+  align-items: center; padding: 8px 10px; border-radius: 10px;
+  background: rgba(244, 247, 250, 0.9); border: 1px solid var(--line);
+}
+.robot-chip b, .order-chip b { font-size: 13px; color: var(--ink); }
+.robot-chip em, .order-chip em { font-style: normal; color: var(--muted); font-size: 11px; }
+.robot-chip small, .order-chip small { grid-column: 1 / -1; color: #97a3af; font-size: 10px; }
+.robot-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
+.robot-dot.busy { background: var(--warn); }
+.robot-dot.fault, .robot-dot.offline { background: #a64d4d; }
+.dispatch-empty { padding: 10px; text-align: center; color: var(--muted); font-size: 12px; background: rgba(244, 247, 250, 0.5); border-radius: 10px; }
+
+/* 详情面板：派单按钮 + 追踪区 */
+.dispatch-action { display: flex; align-items: center; gap: 12px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.dispatch-hint { color: var(--muted); font-size: 12px; }
+.dispatch-tracking { margin-top: 14px; padding: 14px 16px; border-radius: 16px; background: rgba(237, 245, 248, 0.9); border: 1px solid rgba(83, 120, 165, 0.18); }
+.dispatch-pill { padding: 3px 10px; border-radius: 999px; font-size: 11px; background: rgba(58, 111, 143, 0.12); color: var(--accent); }
+.dispatch-pill.running { background: #fff4df; color: var(--warn); }
+.dispatch-pill.done { background: rgba(47, 122, 91, 0.15); color: var(--ok); }
+.tracking-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 10px; }
+.tracking-cell { padding: 10px 12px; border-radius: 10px; background: rgba(255, 255, 255, 0.85); border: 1px solid var(--line); }
+.tracking-cell span { display: block; color: var(--muted); font-size: 11px; }
+.tracking-cell strong { display: block; margin-top: 4px; font-size: 16px; color: var(--ink); }
+.dispatch-actions-row { display: flex; justify-content: flex-end; gap: 6px; margin-top: 8px; }
+@media (max-width: 680px) {
+  .tracking-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .dispatch-columns { grid-template-columns: 1fr; }
 }
 
 .patrol-band__title,

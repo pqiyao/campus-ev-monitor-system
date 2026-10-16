@@ -18,6 +18,7 @@ export const listMissions = () => api.get('/missions').then(r => r.data.data || 
 export const getMission = (id: number) => api.get(`/missions/${id}`).then(r => r.data.data)
 export const getMissionAudit = (id: number) => api.get(`/missions/${id}`).then(r => r.data.data?.audit || [])
 export const planMission = (id: number) => api.post(`/missions/${id}/plan`).then(r => r.data.data)
+export const customPlanMission = (id: number, data: any) => api.post(`/missions/${id}/custom-plan`, data).then(r => r.data.data)
 export const startMission = (id: number) => api.post(`/missions/${id}/start`).then(r => r.data.data)
 export const pauseMission = (id: number) => api.post(`/missions/${id}/pause`).then(r => r.data.data)
 export const replanMission = (id: number, reason: string) => api.post(`/missions/${id}/replan`, { reason }).then(r => r.data.data)

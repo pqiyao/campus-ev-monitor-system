@@ -256,6 +256,13 @@
                 <span>{{ patrolSummary.events }} 个巡检事件</span>
                 <span v-if="patrolSummary.latest">无人机 {{ patrolSummary.latest }}</span>
               </div>
+              <div v-if="patrolSummary.coverage" class="patrol-overlay-summary__coverage">
+                <em class="coverage-badge">Fields2Cover 全覆盖</em>
+                <span>{{ patrolSummary.coverage.missions }} 条航线</span>
+                <span>{{ patrolSummary.coverage.swaths }} 扫掠带</span>
+                <span>{{ patrolSummary.coverage.area.toLocaleString() }} ㎡</span>
+                <span>{{ patrolSummary.coverage.length }} m</span>
+              </div>
               <div v-if="patrolSummary.eventList.length" class="patrol-overlay-summary__events">
                 <button
                   v-for="event in patrolSummary.eventList"
@@ -266,6 +273,25 @@
                   <span>{{ event.event_type || '巡检事件' }} · {{ event.fused_risk_level || event.risk_level || '待研判' }}</span>
                   <small>{{ event.location || event.area_name || '地图事件' }} · {{ event.source_count || 1 }}源 / {{ event.related_event_count || 0 }}条证据</small>
                 </button>
+              </div>
+            </div>
+
+            <!-- 空地协同态势条（无人机+地面机器人+热源） -->
+            <div class="situ-strip">
+              <div class="situ-strip__item" :class="{ alert: thermalFrames.some(f => f.risk_level === 'HIGH' || f.risk_level === 'CRITICAL') }">
+                <span class="situ-strip__dot" :data-risk="thermalFrames[0]?.risk_level || 'LOW'"></span>
+                <b>{{ thermalFrames.length }}</b>
+                <em>热源帧</em>
+              </div>
+              <div class="situ-strip__item" :class="{ alert: dispatchRobots.some(r => r.state === 'FAULT') }">
+                <span class="situ-strip__dot situ-strip__dot--robot"></span>
+                <b>{{ dispatchRobots.length }}</b>
+                <em>机器人</em>
+              </div>
+              <div class="situ-strip__item">
+                <span class="situ-strip__dot situ-strip__dot--order"></span>
+                <b>{{ activeOrders.length }}</b>
+                <em>执行中订单</em>
               </div>
             </div>
 
@@ -299,6 +325,7 @@
             <ul class="con02TopUL">
               <li :class="{ 'con02liAcitve': activeSearchTab === 'vehicle' }" @click="setActiveSearchTab('vehicle')">车辆信息</li>
               <li :class="{ 'con02liAcitve': activeSearchTab === 'analysis' }" @click="setActiveSearchTab('analysis')">违规分析</li>
+              <li :class="{ 'con02liAcitve': activeSearchTab === 'coord' }" @click="setActiveSearchTab('coord')">空地协同</li>
               <li :class="{ 'con02liAcitve': activeSearchTab === 'location' }" @click="openLocationDialog">定位管理</li>
             </ul>
           </div>
@@ -377,10 +404,148 @@
                 </div>
               </div>
             </div>
+
+            <!-- 空地协同：无人机巡检 + 派单调度 + 热源监测 -->
+            <div class="boxChangeCon coord-panel" v-if="activeSearchTab === 'coord'">
+              <!-- 无人机巡检 -->
+              <div class="coord-block">
+                <div class="coord-block__head">
+                  <span class="coord-block__tag coord-block__tag--drone">无人机</span>
+                  <b>低空巡检 · PyBullet仿真</b>
+                  <button class="coord-btn primary" @click="oneClickPatrol" :disabled="patrolRunning">
+                    {{ patrolRunning ? '仿真中…' : '⚡ 一键巡检' }}
+                  </button>
+                </div>
+                <div v-if="patrolLog.length" class="coord-log">
+                  <div v-for="(l, i) in patrolLog" :key="i" class="coord-log__line" :class="l.type">
+                    <span class="coord-log__time">{{ l.time }}</span>
+                    <span>{{ l.text }}</span>
+                  </div>
+                </div>
+                <ul class="coord-list">
+                  <li v-if="patrolMissions.length === 0" class="coord-empty">点击「一键巡检」启动 PyBullet 物理仿真</li>
+                  <li v-for="m in patrolMissions.slice(0, 3)" :key="m.mission_id" class="coord-row">
+                    <div class="coord-row__main">
+                      <em class="coord-code">{{ m.mission_code }}</em>
+                      <span class="coord-row__goal">{{ m.goal || m.area_name }}</span>
+                    </div>
+                    <div class="coord-row__battery">
+                      <div class="battery-bar">
+                        <div class="battery-bar__fill" :style="{ width: (m.battery_current || 0) + '%', background: batteryColor(m.battery_current) }"></div>
+                      </div>
+                      <small>{{ Math.round(m.battery_current || 0) }}%</small>
+                    </div>
+                    <div class="coord-row__meta">
+                      <span v-if="m.coverage" class="coverage-chip" :title="`Fields2Cover 全覆盖：${m.coverage.swathCount}扫掠带 / ${Math.round(m.coverage.areaM2||0)}㎡ / ${Math.round(m.coverage.pathLengthM||0)}m`">
+                        全覆盖·{{ m.coverage.swathCount }}带
+                      </span>
+                      <span class="state-chip" :class="'state-' + (m.state || '').toLowerCase()">{{ stateLabel(m.state) }}</span>
+                    </div>
+                  </li>
+                </ul>
+              </div>
+
+              <!-- 派单调度 -->
+              <div class="coord-block">
+                <div class="coord-block__head">
+                  <span class="coord-block__tag coord-block__tag--robot">地面</span>
+                  <b>空地协同派单</b>
+                  <button class="coord-btn" @click="autoDispatch" :disabled="dispatchRunning">
+                    {{ dispatchRunning ? '派单中…' : '自动派单' }}
+                  </button>
+                </div>
+                <div class="coord-robots">
+                  <div v-for="r in dispatchRobots.slice(0, 4)" :key="r.robot_id || r.id" class="coord-robot" :class="'robot-' + (r.state || '').toLowerCase()">
+                    <span class="coord-robot__dot" :class="'dot-' + (r.state || '').toLowerCase()"></span>
+                    <em>{{ r.robot_code || r.name }}</em>
+                    <small>{{ robotStateLabel(r.state) }} · {{ Math.round(r.battery || 0) }}%</small>
+                  </div>
+                  <div v-if="dispatchRobots.length === 0" class="coord-empty">暂无机器人</div>
+                </div>
+                <ul class="coord-list">
+                  <li v-for="o in activeOrders" :key="o.order_id" class="coord-row">
+                    <div class="coord-row__main">
+                      <em class="coord-code">{{ o.order_code }}</em>
+                      <span class="coord-row__goal">{{ o.event_type || o.goal || '派单任务' }}</span>
+                    </div>
+                    <div class="coord-row__meta">
+                      <span class="state-chip state-executing">{{ robotStateLabel(o.state) }}</span>
+                      <small>{{ o.robot_code || '未分配' }}</small>
+                    </div>
+                  </li>
+                  <li v-if="activeOrders.length === 0" class="coord-empty">无执行中订单</li>
+                </ul>
+              </div>
+
+              <!-- 热源监测 -->
+              <div class="coord-block">
+                <div class="coord-block__head">
+                  <span class="coord-block__tag coord-block__tag--thermal">热源</span>
+                  <b>红外热源监测</b>
+                  <button class="coord-btn" @click="injectThermal">注入测试</button>
+                </div>
+                <ul class="coord-list">
+                  <li v-for="f in thermalFrames" :key="f.frame_id" class="coord-row">
+                    <div class="coord-row__main">
+                      <em class="coord-code">{{ f.device_code || '热成像' }}</em>
+                      <span class="coord-row__goal">{{ f.location_name || '监测点' }}</span>
+                    </div>
+                    <div class="coord-row__temp">
+                      <b :style="{ color: tempColor(f.max_temp) }">{{ (f.max_temp || 0).toFixed(0) }}℃</b>
+                    </div>
+                    <div class="coord-row__meta">
+                      <span class="risk-chip" :class="'risk-' + (f.risk_level || 'LOW').toLowerCase()">{{ riskLabel(f.risk_level) }}</span>
+                      <small>{{ formatTime(f.create_time) }}</small>
+                    </div>
+                  </li>
+                  <li v-if="thermalFrames.length === 0" class="coord-empty">暂无热源帧，点击「注入测试」</li>
+                </ul>
+              </div>
+            </div>
           </div>
         </div>
       </div>
     </section>
+
+    <!-- 智能体悬浮对话 -->
+    <div class="agent-fab" :class="{ open: agentFloating }" @click="agentFloating = !agentFloating">
+      <span v-if="!agentFloating" class="agent-fab__icon">AI</span>
+      <span v-else class="agent-fab__icon">×</span>
+      <span v-if="!agentFloating" class="agent-fab__label">治理智能体</span>
+    </div>
+    <transition name="agent-panel">
+      <div v-if="agentFloating" class="agent-panel">
+        <div class="agent-panel__head">
+          <div>
+            <b>校园电动车治理智能体</b>
+            <small>{{ agentStatus.agentRole || '时空治理智能体' }}</small>
+          </div>
+          <div class="agent-panel__status-group">
+            <span class="agent-panel__status on">运行中</span>
+            <span class="agent-panel__status" :class="{ on: agentStatus.llmConfigured }" :title="agentStatus.llmConfigured ? '大模型已连接' : '需配置 DeepSeek API Key'">
+              {{ agentStatus.llmConfigured ? 'LLM已连' : 'LLM未配' }}
+            </span>
+          </div>
+        </div>
+        <div v-if="!agentStatus.llmConfigured" class="agent-panel__keytip">
+          <span>需配置 DeepSeek API Key 才能对话推理</span>
+          <input v-model="agentApiKey" placeholder="sk-..." @keyup.enter="saveAgentApiKey" />
+          <button @click="saveAgentApiKey">保存</button>
+        </div>
+        <div class="agent-panel__body" ref="agentBodyEl">
+          <div v-if="agentMessages.length === 0" class="agent-panel__empty">
+            我可以查询摄像头、AI事件、违规记录、车辆定位，也能创建巡检任务、审核事件。试试："查询当前在线摄像头"
+          </div>
+          <div v-for="(m, i) in agentMessages" :key="i" class="agent-msg" :class="m.role">
+            <div class="agent-msg__bubble">{{ m.content || (agentStreaming && i === agentMessages.length - 1 ? '思考中…' : '') }}</div>
+          </div>
+        </div>
+        <div class="agent-panel__foot">
+          <input v-model="agentInput" @keyup.enter="sendAgentMessage" placeholder="向智能体提问…" :disabled="agentStreaming" />
+          <button @click="sendAgentMessage" :disabled="agentStreaming">{{ agentStreaming ? '…' : '发送' }}</button>
+        </div>
+      </div>
+    </transition>
 
     <!-- 定位管理弹窗（大尺寸） -->
     <el-dialog
@@ -725,6 +890,7 @@ import {
   normalizeCampusPoint
 } from '@/config/campusMap'
 import { loadBaiduMapGL } from '@/utils/map/baiduMap'
+import { getAgentStatus, getAgentContext, runAgentStream, listAgentSessions } from '@/api/agent'
 
 const API_BASE_URL = getApiBaseUrl()
 const router = useRouter()
@@ -883,12 +1049,197 @@ const demoPointMotionOrigins = new Map()
 const dashboardData = ref({ statistics: null, cameras: [], weather: null })
 const alertList = ref([])
 const patrolSummary = ref({ visible: false, running: 0, events: 0, latest: '', eventList: [] })
+const patrolMissions = ref([])
 const patrolDialogVisible = ref(false)
+const patrolRunning = ref(false)
+const patrolLog = ref([])
+const dispatchRunning = ref(false)
+function pushLog(text, type = 'info') {
+  const t = new Date()
+  const time = `${String(t.getHours()).padStart(2,'0')}:${String(t.getMinutes()).padStart(2,'0')}:${String(t.getSeconds()).padStart(2,'0')}`
+  patrolLog.value.unshift({ time, text, type })
+  if (patrolLog.value.length > 8) patrolLog.value.pop()
+}
+async function oneClickPatrol() {
+  if (patrolRunning.value) return
+  patrolRunning.value = true
+  patrolLog.value = []
+  try {
+    pushLog('① 创建巡检任务…')
+    const created = await axios.post(`${API_BASE_URL}/patrol/missions`, {
+      goal: '校园电动车安全巡检（PyBullet 物理仿真）',
+      areaName: ACTIVE_CAMPUS.name,
+      centerLng: ACTIVE_CAMPUS.lng,
+      centerLat: ACTIVE_CAMPUS.lat,
+      durationLimitSec: 900
+    })
+    const mid = created.data?.data?.mission_id
+    pushLog(`✓ 任务已创建 #${mid}`, 'ok')
+    pushLog('② 规划航线（风险网格+航点）…')
+    await axios.post(`${API_BASE_URL}/patrol/missions/${mid}/plan`)
+    pushLog('✓ 航线规划完成', 'ok')
+    pushLog('③ 启动 PyBullet 物理仿真…')
+    await axios.post(`${API_BASE_URL}/patrol/missions/${mid}/start`)
+    pushLog('✓ 仿真已启动，无人机执行中', 'ok')
+    ElMessage.success('巡检仿真已启动')
+    loadSitu()
+    await fetchMapData()
+    // 定位到新航线，确保覆盖航线立即可见
+    if (map && typeof BMapGL !== 'undefined') {
+      map.centerAndZoom(new BMapGL.Point(ACTIVE_CAMPUS.lng, ACTIVE_CAMPUS.lat), 17)
+    }
+  } catch (e) {
+    pushLog(`✗ 失败：${e?.response?.data?.message || e.message}`, 'err')
+    ElMessage.error('巡检启动失败')
+  } finally {
+    patrolRunning.value = false
+  }
+}
+async function autoDispatch() {
+  if (dispatchRunning.value) return
+  dispatchRunning.value = true
+  try {
+    const res = await axios.post(`${API_BASE_URL}/dispatch/auto`)
+    const order = res.data?.data
+    if (order) {
+      ElMessage.success(`派单成功：${order.order_code || '订单'}`)
+    } else {
+      ElMessage.info('暂无可派单的事件')
+    }
+    loadSitu()
+  } catch (e) {
+    ElMessage.error('派单失败：' + (e?.response?.data?.message || e.message))
+  } finally {
+    dispatchRunning.value = false
+  }
+}
+async function injectThermal() {
+  try {
+    const temps = [85, 120, 200, 280]
+    const maxTemp = temps[Math.floor(Math.random() * temps.length)]
+    await axios.post(`${API_BASE_URL}/thermal/ingest`, {
+      deviceId: 'thermal-drone-demo',
+      sourceType: 'CAMERA',
+      locationName: '演示监测点',
+      tempMatrix: Array.from({ length: 8 }, () => Array.from({ length: 8 }, () => Math.round(25 + Math.random() * (maxTemp - 25)))),
+      ambientTemp: 28,
+      sceneType: 'CHARGING_STATION'
+    })
+    ElMessage.success(`已注入热源帧（峰值 ${maxTemp}℃）`)
+    loadSitu()
+  } catch (e) {
+    ElMessage.error('注入失败：' + (e?.response?.data?.message || e.message))
+  }
+}
+
+// ====== 空地协同 + 热源 + 智能体 ======
+const thermalFrames = ref([])
+const dispatchRobots = ref([])
+const activeOrders = ref([])
+let situTimer = null
+async function loadSitu() {
+  try {
+    const [frames, robots, orders, missions] = await Promise.all([
+      axios.get(`${API_BASE_URL}/thermal/frames?limit=4`).then(r => r.data?.data || []).catch(() => []),
+      axios.get(`${API_BASE_URL}/dispatch/robots`).then(r => r.data?.data || []).catch(() => []),
+      axios.get(`${API_BASE_URL}/dispatch/orders?state=EXECUTING&limit=5`).then(r => r.data?.data || []).catch(() => []),
+      axios.get(`${API_BASE_URL}/patrol/missions?limit=4&activeOnly=true`).then(r => r.data?.data || []).catch(() => []),
+    ])
+    thermalFrames.value = frames
+    dispatchRobots.value = robots
+    activeOrders.value = orders
+    patrolMissions.value = Array.isArray(missions) ? missions : (missions?.list || [])
+  } catch {}
+}
+function stateLabel(state) {
+  return ({ PLANNED: '待启动', RUNNING: '执行中', PAUSED: '暂停', COMPLETED: '已完成', FAILED: '失败' })[state] || state || '—'
+}
+async function quickStartMission(missionId) {
+  try {
+    await axios.post(`${API_BASE_URL}/patrol/missions/${missionId}/start`)
+    ElMessage.success('巡检任务已启动')
+    loadSitu()
+  } catch (e) { ElMessage.error('启动失败：' + (e?.response?.data?.message || e.message)) }
+}
+async function manualDispatch() {
+  try {
+    const events = await axios.get(`${API_BASE_URL}/dispatch/events?unassigned=true&limit=5`).then(r => r.data?.data || [])
+    if (!events.length) { ElMessage.info('暂无可派单的事件'); return }
+    const ev = events[0]
+    await axios.post(`${API_BASE_URL}/dispatch/events/${ev.event_id}/dispatch`)
+    ElMessage.success(`已派单：事件#${ev.event_id}`)
+    loadSitu()
+  } catch (e) { ElMessage.error('派单失败：' + (e?.response?.data?.message || e.message)) }
+}
+function gotoPatrol() { router.push('/ai-governance/patrol') }
+function riskLabel(risk) {
+  return ({ LOW: '低', MEDIUM: '中', HIGH: '高', CRITICAL: '紧急' })[risk] || '—'
+}
+function robotStateLabel(state) {
+  return ({ IDLE: '空闲', BUSY: '执行中', FAULT: '故障', OFFLINE: '离线' })[state] || state || '—'
+}
+function batteryColor(v) {
+  v = v || 0
+  if (v > 60) return 'linear-gradient(90deg,#52c41a,#95de64)'
+  if (v > 30) return 'linear-gradient(90deg,#faad14,#ffd666)'
+  return 'linear-gradient(90deg,#ff4d4f,#ff7875)'
+}
+function tempColor(t) {
+  t = t || 0
+  if (t > 200) return '#ff1f1f'
+  if (t > 100) return '#fa541c'
+  if (t > 60) return '#faad14'
+  if (t > 40) return '#faad14'
+  return '#52c41a'
+}
+
+// 智能体悬浮对话
+const agentFloating = ref(false)
+const agentMessages = ref([])
+const agentInput = ref('')
+const agentStreaming = ref(false)
+const agentSessionId = ref('')
+const agentStatus = ref({})
+const agentApiKey = ref(localStorage.getItem('agent_api_key') || '')
+async function loadAgentStatus() {
+  try { agentStatus.value = await getAgentStatus() } catch {}
+}
+async function saveAgentApiKey() {
+  const key = agentApiKey.value.trim()
+  if (!key) { ElMessage.warning('请输入 API Key'); return }
+  try {
+    await axios.post(`${API_BASE_URL}/agent/config`, { apiKey: key })
+    localStorage.setItem('agent_api_key', key)
+    ElMessage.success('API Key 已配置，智能体可正常推理')
+    loadAgentStatus()
+  } catch (e) { ElMessage.error('保存失败') }
+}
+async function sendAgentMessage() {
+  const text = agentInput.value.trim()
+  if (!text || agentStreaming.value) return
+  agentMessages.value.push({ role: 'user', content: text })
+  agentInput.value = ''
+  agentStreaming.value = true
+  agentMessages.value.push({ role: 'assistant', content: '' })
+  const lastIdx = agentMessages.value.length - 1
+  const finish = () => { agentStreaming.value = false }
+  runAgentStream(
+    { goal: text, sessionId: agentSessionId.value || undefined, limit: 30 },
+    {
+      onContent: (delta) => { agentMessages.value[lastIdx].content += delta },
+      onToolCallStart: (name) => { agentMessages.value[lastIdx].content += `\n[调用工具: ${name}]\n` },
+      onToolCallResult: (name) => { agentMessages.value[lastIdx].content += `[${name} 完成]\n` },
+      onDone: (envelope) => { if (envelope?.sessionId) agentSessionId.value = envelope.sessionId; finish() },
+      onError: (msg) => { agentMessages.value[lastIdx].content = `[错误] ${msg}`; finish() },
+    }
+  )
+  setTimeout(() => { if (agentStreaming.value) finish() }, 60000)
+}
 const patrolCreating = ref(false)
 const patrolForm = reactive({
   goal: '巡查校园电动车高风险区域，发现异常后回传原AI事件中心',
   areaName: ACTIVE_CAMPUS.name || '当前校区',
-  durationLimitSec: 720,
+  durationLimitSec: 900,
   autoStart: true
 })
 
@@ -906,6 +1257,11 @@ let map = null
 const mapDataOverlays = []
 const geofenceOverlays = []
 const patrolOverlays = []
+// 飞行中无人机的平滑动画状态（真实遥测点之间做插值，marker 随 PyBullet 遥测沿航线移动）
+const flyingDrones = new Map()
+let droneRafId = 0
+let mapFastTimer = null
+const FLYING_STATES = ['RUNNING', 'RETURNING', 'MANUAL_CONTROL']
 const parkingGuideOverlays = []
 const demoPointMarkers = new Map()
 let mapContainerEl = null
@@ -1946,6 +2302,80 @@ const patrolPoint = (row) => {
   return Number.isFinite(normalized.lng) && Number.isFinite(normalized.lat) ? normalized : null
 }
 
+// 飞行中无人机图标（青色四旋翼，中心对称无需旋转）
+const DRONE_ICON_SVG = encodeURIComponent(
+  "<svg xmlns='http://www.w3.org/2000/svg' width='34' height='34' viewBox='0 0 34 34'>"
+  + "<g stroke='#0e7490' stroke-width='1.5'><line x1='10' y1='10' x2='14.5' y2='14.5'/>"
+  + "<line x1='24' y1='10' x2='19.5' y2='14.5'/><line x1='10' y1='24' x2='14.5' y2='19.5'/>"
+  + "<line x1='24' y1='24' x2='19.5' y2='19.5'/></g>"
+  + "<circle cx='10' cy='10' r='3.4' fill='#67e8f9' stroke='#155e75' stroke-width='1.1'/>"
+  + "<circle cx='24' cy='10' r='3.4' fill='#67e8f9' stroke='#155e75' stroke-width='1.1'/>"
+  + "<circle cx='10' cy='24' r='3.4' fill='#67e8f9' stroke='#155e75' stroke-width='1.1'/>"
+  + "<circle cx='24' cy='24' r='3.4' fill='#67e8f9' stroke='#155e75' stroke-width='1.1'/>"
+  + "<rect x='12.5' y='12.5' width='9' height='9' rx='2.2' fill='#0891b2' stroke='#ecfeff' stroke-width='1.2'/>"
+  + "<circle cx='17' cy='17' r='1.8' fill='#ecfeff'/></svg>"
+)
+const droneIcon = () => {
+  try {
+    return new BMapGL.Icon(`data:image/svg+xml,${DRONE_ICON_SVG}`, new BMapGL.Size(34, 34), { anchor: new BMapGL.Size(17, 17) })
+  } catch (e) { return null }
+}
+
+// rAF 动画器：在两个真实遥测点之间平滑插值，并持续刷新高度/速度/电量标签
+const startDroneAnimator = () => {
+  if (droneRafId || typeof requestAnimationFrame === 'undefined') return
+  let lastLabelTs = 0
+  const tick = () => {
+    const now = performance.now()
+    flyingDrones.forEach((a) => {
+      if (!a.marker) return
+      const t = Math.min(1, Math.max(0, (now - a.startTs) / a.durationMs))
+      const lng = a.from.lng + (a.to.lng - a.from.lng) * t
+      const lat = a.from.lat + (a.to.lat - a.from.lat) * t
+      try { a.marker.setPosition(new BMapGL.Point(lng, lat)) } catch (e) { /* overlay 已销毁 */ }
+      if (now - lastLabelTs > 220) {
+        const alt = (a.from.alt ?? 0) + ((a.to.alt ?? 0) - (a.from.alt ?? 0)) * t
+        const spd = (a.from.spd ?? 0) + ((a.to.spd ?? 0) - (a.from.spd ?? 0)) * t
+        const bat = (a.from.bat ?? 0) + ((a.to.bat ?? 0) - (a.from.bat ?? 0)) * t
+        const phaseText = a.to.phase === 'RETURNING' ? '返航中' : '巡检飞行中'
+        try {
+          a.label.setContent(`🛸 ${a.code} · ${phaseText} · 高${alt.toFixed(0)}m · ${spd.toFixed(1)}m/s · 电${bat.toFixed(1)}%`)
+        } catch (e) { /* ignore */ }
+      }
+    })
+    if (now - lastLabelTs > 220) lastLabelTs = now
+    droneRafId = requestAnimationFrame(tick)
+  }
+  droneRafId = requestAnimationFrame(tick)
+}
+
+const registerFlyingDrone = (mission, state, telemetry, trail, marker, label) => {
+  const key = String(mission.mission_id ?? mission.missionId ?? mission.mission_code)
+  const prev = flyingDrones.get(key)
+  const now = performance.now()
+  let fromPt
+  if (prev) {
+    // 接续上一帧插值后的视觉位置，避免重画跳变
+    const t = Math.min(1, Math.max(0, (now - prev.startTs) / prev.durationMs))
+    fromPt = { lng: prev.from.lng + (prev.to.lng - prev.from.lng) * t, lat: prev.from.lat + (prev.to.lat - prev.from.lat) * t,
+      alt: prev.from.alt + (prev.to.alt - prev.from.alt) * t, spd: prev.from.spd + (prev.to.spd - prev.from.spd) * t,
+      bat: prev.from.bat + (prev.to.bat - prev.from.bat) * t }
+  } else {
+    const before = trail.length >= 2 ? trail[trail.length - 2] : telemetry
+    fromPt = { lng: before.lng, lat: before.lat,
+      alt: Number(mission.latestTelemetry?.altitude_m ?? 30), spd: 0, bat: Number(mission.battery_current ?? 100) }
+  }
+  const toPt = { lng: telemetry.lng, lat: telemetry.lat,
+    alt: Number(mission.latestTelemetry?.altitude_m ?? fromPt.alt),
+    spd: Number(mission.latestTelemetry?.speed_mps ?? 0),
+    bat: Number(mission.battery_current ?? fromPt.bat), phase: state }
+  flyingDrones.set(key, {
+    marker, label, code: mission.mission_code || key,
+    from: fromPt, to: toPt, startTs: now, durationMs: 2100
+  })
+  try { marker.setPosition(new BMapGL.Point(fromPt.lng, fromPt.lat)) } catch (e) { /* ignore */ }
+}
+
 const drawPatrolOverlays = (patrol) => {
   if (!map || typeof BMapGL === 'undefined') return
   clearPatrolOverlays()
@@ -1953,6 +2383,10 @@ const drawPatrolOverlays = (patrol) => {
   let running = 0
   let events = 0
   let latest = ''
+  let coverageMissions = 0
+  let coverageSwaths = 0
+  let coverageArea = 0
+  let coverageLength = 0
   const overlayMissions = missions
     .slice()
     .sort((a, b) => {
@@ -1967,24 +2401,74 @@ const drawPatrolOverlays = (patrol) => {
     const state = String(mission.state || '').toUpperCase()
     if (['RUNNING', 'RETURNING', 'MANUAL_CONTROL'].includes(state)) running += 1
     events += Array.isArray(mission.events) ? mission.events.length : 0
+    if (mission.coverage) {
+      coverageMissions += 1
+      coverageSwaths += Number(mission.coverage.swathCount) || 0
+      coverageArea += Number(mission.coverage.areaM2) || 0
+      coverageLength += Number(mission.coverage.pathLengthM) || 0
+    }
   })
+  // 只画当前执行/暂停任务。历史种子任务仍保留在数据库，但不能污染实时态势图。
   overlayMissions.forEach((mission) => {
     const state = String(mission.state || '').toUpperCase()
-    const missionEvents = Array.isArray(mission.events) ? mission.events : []
     const telemetry = patrolPoint(mission.latestTelemetry)
     if (telemetry) latest = `${telemetry.lng.toFixed(5)}, ${telemetry.lat.toFixed(5)}`
 
     const waypoints = (Array.isArray(mission.waypoints) ? mission.waypoints : [])
       .map(patrolPoint).filter(Boolean)
+    const coverage = mission.coverage || null
     if (waypoints.length >= 2) {
+      const isCoverage = !!coverage
+      const routeColor = isCoverage ? '#22d3ee' : (state === 'RUNNING' ? '#ffd166' : '#55b8ff')
       const route = new BMapGL.Polyline(waypoints.map(p => new BMapGL.Point(p.lng, p.lat)), {
-        strokeColor: state === 'RUNNING' ? '#ffd166' : '#55b8ff',
-        strokeWeight: 4,
-        strokeOpacity: 0.9,
+        strokeColor: routeColor,
+        strokeWeight: isCoverage ? 6 : 4,
+        strokeOpacity: 0.95,
         strokeStyle: state === 'PAUSED' ? 'dashed' : 'solid'
       })
       map.addOverlay(route)
       patrolOverlays.push(route)
+
+      // 当前任务只保留一层轻量覆盖带，避免与主航线形成重复的高亮线。
+      if (isCoverage) {
+        for (let i = 0; i + 1 < waypoints.length; i += 2) {
+          const swathLine = new BMapGL.Polyline(
+            [new BMapGL.Point(waypoints[i].lng, waypoints[i].lat),
+             new BMapGL.Point(waypoints[i + 1].lng, waypoints[i + 1].lat)],
+            { strokeColor: '#22d3ee', strokeWeight: 16, strokeOpacity: 0.22, strokeStyle: 'solid' }
+          )
+          map.addOverlay(swathLine)
+          patrolOverlays.push(swathLine)
+        }
+      }
+
+      // 全覆盖航线：标注起飞点 + Fields2Cover 覆盖指标
+      if (isCoverage) {
+        const startPt = waypoints[0]
+        const endPt = waypoints[waypoints.length - 1]
+        const startCircle = new BMapGL.Circle(new BMapGL.Point(startPt.lng, startPt.lat), 6, {
+          strokeColor: '#22d3ee', strokeWeight: 2, strokeOpacity: 0.9,
+          fillColor: '#22d3ee', fillOpacity: 0.7
+        })
+        map.addOverlay(startCircle)
+        patrolOverlays.push(startCircle)
+        const startLabel = new BMapGL.Label('起飞点', {
+          position: new BMapGL.Point(startPt.lng, startPt.lat),
+          offset: new BMapGL.Size(10, -10)
+        })
+        startLabel.setStyle({ color: '#06363f', background: 'rgba(34,211,238,.92)', border: '1px solid #0891b2', padding: '2px 6px', borderRadius: '3px', fontSize: '11px', zIndex: 1150 })
+        map.addOverlay(startLabel)
+        patrolOverlays.push(startLabel)
+
+        const covText = `全覆盖 ${coverage.swathCount || 0}带 · ${Math.round(coverage.areaM2 || 0)}㎡ · ${Math.round(coverage.pathLengthM || 0)}m`
+        const endLabel = new BMapGL.Label(covText, {
+          position: new BMapGL.Point(endPt.lng, endPt.lat),
+          offset: new BMapGL.Size(10, 10)
+        })
+        endLabel.setStyle({ color: '#eafdff', background: 'rgba(8,47,73,.92)', border: '1px solid #22d3ee', padding: '3px 7px', borderRadius: '3px', fontSize: '11px', zIndex: 1150 })
+        map.addOverlay(endLabel)
+        patrolOverlays.push(endLabel)
+      }
     }
 
     const trail = (Array.isArray(mission.trail) ? mission.trail : [])
@@ -1999,30 +2483,64 @@ const drawPatrolOverlays = (patrol) => {
 
     if (telemetry) {
       const point = new BMapGL.Point(telemetry.lng, telemetry.lat)
-      const marker = new BMapGL.Marker(point)
-      const telemetryLabel = new BMapGL.Label(`无人机 ${mission.mission_code || mission.mission_id} · ${state}`, {
-        offset: new BMapGL.Size(16, -12),
-      })
+      const isFlying = FLYING_STATES.includes(state)
+      const icon = isFlying ? droneIcon() : null
+      const marker = icon ? new BMapGL.Marker(point, { icon }) : new BMapGL.Marker(point)
+       const telemetrySource = String(telemetry.raw_payload || mission.latestTelemetry?.raw_payload || '').toLowerCase()
+       const telemetrySourceLabel = telemetrySource === 'pybullet-physics'
+         ? 'PyBullet物理遥测'
+         : telemetrySource === 'java-simulation'
+           ? 'Java确定性仿真遥测'
+           : telemetrySource === 'external-device'
+             ? '外部设备遥测'
+             : '后端遥测'
+       const telemetryLabel = new BMapGL.Label(
+        isFlying
+        ? `🛸 ${mission.mission_code || mission.mission_id} · ${telemetrySourceLabel}`
+          : `无人机 ${mission.mission_code || mission.mission_id} · ${state}`,
+        { offset: new BMapGL.Size(18, -14) }
+      )
       telemetryLabel.setStyle({
-        color: '#eaf7ff',
-        background: 'rgba(8,25,42,.94)',
-        border: '1px solid #55b8ff',
+        color: isFlying ? '#ecfeff' : '#eaf7ff',
+        background: isFlying ? 'rgba(8,47,73,.95)' : 'rgba(8,25,42,.94)',
+        border: isFlying ? '1px solid #22d3ee' : '1px solid #55b8ff',
         padding: '4px 7px',
         borderRadius: '3px',
         fontSize: '11px',
+        fontWeight: isFlying ? 'bold' : 'normal',
         cursor: 'pointer',
-        zIndex: 1100,
+        zIndex: 1250,
         pointerEvents: 'auto'
       })
-      if (typeof telemetryLabel.setZIndex === 'function') telemetryLabel.setZIndex(1200)
+      if (typeof telemetryLabel.setZIndex === 'function') telemetryLabel.setZIndex(1250)
       marker.setLabel(telemetryLabel)
       marker.addEventListener('click', () => {
-        map.openInfoWindow(new BMapGL.InfoWindow(`<div style="padding:10px;min-width:210px"><strong>无人机巡检</strong><p>任务：${mission.mission_code || mission.mission_id}</p><p>状态：${state}</p><p>电量：${mission.battery_current ?? telemetry.battery ?? '--'}%</p><p>航线版本：${mission.plan_version ?? '--'}</p></div>`), point)
+         map.openInfoWindow(new BMapGL.InfoWindow(`<div style="padding:10px;min-width:230px"><strong>无人机巡检${isFlying ? `（${telemetrySourceLabel}）` : ''}</strong><p>任务：${mission.mission_code || mission.mission_id}</p><p>状态：${state}</p><p>数据来源：${telemetrySourceLabel}</p><p>高度：${mission.latestTelemetry?.altitude_m ?? '--'}m · 速度：${mission.latestTelemetry?.speed_mps ?? '--'}m/s</p><p>电量：${mission.battery_current ?? telemetry.battery ?? '--'}%</p><p>航线版本：${mission.plan_version ?? '--'}</p></div>`), point)
       })
       map.addOverlay(marker)
       patrolOverlays.push(marker)
+      if (isFlying) {
+        registerFlyingDrone(mission, state, telemetry, trail, marker, telemetryLabel)
+        startDroneAnimator()
+      } else {
+        flyingDrones.delete(String(mission.mission_id ?? mission.missionId ?? mission.mission_code))
+      }
     }
+  })
+  // 清理已不存在的飞行任务动画状态
+  const missionKeys = new Set(missions.map(m => String(m.mission_id ?? m.missionId ?? m.mission_code)))
+  Array.from(flyingDrones.keys()).forEach((k) => { if (!missionKeys.has(k)) flyingDrones.delete(k) })
+  // 有飞行中任务时 2s 快轮询 map-data，否则停止（10s 常规轮询仍在）
+  if (running > 0) {
+    if (!mapFastTimer) mapFastTimer = setInterval(fetchMapData, 2000)
+  } else if (mapFastTimer) {
+    clearInterval(mapFastTimer)
+    mapFastTimer = null
+  }
 
+  // 仅前 3 个任务画 AI 事件标签，避免地图过乱
+  overlayMissions.forEach((mission) => {
+    const missionEvents = Array.isArray(mission.events) ? mission.events : []
     missionEvents.forEach((event, eventIndex) => {
       const p = patrolPoint(event)
       if (!p) return
@@ -2059,11 +2577,18 @@ const drawPatrolOverlays = (patrol) => {
       patrolOverlays.push(marker, eventLabel)
     })
   })
+
   patrolSummary.value = {
     visible: missions.length > 0,
     running,
     events,
     latest,
+    coverage: coverageMissions > 0 ? {
+      missions: coverageMissions,
+      swaths: coverageSwaths,
+      area: Math.round(coverageArea),
+      length: Math.round(coverageLength)
+    } : null,
     eventList: missions
       .flatMap((mission) => Array.isArray(mission.events) ? mission.events : [])
       .filter((event) => event && (event.event_id || event.eventId))
@@ -4038,6 +4563,9 @@ onMounted(() => {
   searchVehicles()
   initTrendChart()
   startTimers()
+  loadSitu()
+  loadAgentStatus()
+  situTimer = window.setInterval(() => { loadSitu(); loadAgentStatus() }, 15000)
 })
 
 onUnmounted(() => {
@@ -4067,6 +4595,10 @@ onUnmounted(() => {
   clearMapDataOverlays()
   clearGeofenceOverlays()
   clearPatrolOverlays()
+  if (mapFastTimer) { clearInterval(mapFastTimer); mapFastTimer = null }
+  if (droneRafId) { cancelAnimationFrame(droneRafId); droneRafId = 0 }
+  flyingDrones.clear()
+  if (situTimer) clearInterval(situTimer)
   window.removeEventListener('resize', getHt)
   trendChart?.dispose()
   distChartAnalysis?.dispose()
@@ -4284,6 +4816,40 @@ a { text-decoration: none; }
   border: 1px solid rgba(85, 184, 255, .65);
   box-shadow: 0 8px 24px rgba(0, 0, 0, .22);
   font-size: 12px;
+}
+
+.patrol-overlay-summary__coverage {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed rgba(34, 211, 238, .4);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  font-size: 11px;
+  color: #9be9f3;
+}
+
+.coverage-badge {
+  font-style: normal;
+  padding: 1px 7px;
+  border-radius: 9px;
+  background: rgba(34, 211, 238, .18);
+  border: 1px solid rgba(34, 211, 238, .55);
+  color: #67e8f9;
+  font-weight: 600;
+  letter-spacing: .3px;
+}
+
+.coverage-chip {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 8px;
+  font-size: 10px;
+  background: rgba(34, 211, 238, .15);
+  border: 1px solid rgba(34, 211, 238, .5);
+  color: #67e8f9;
+  white-space: nowrap;
 }
 
 .patrol-launch-button {
@@ -4908,4 +5474,427 @@ a { text-decoration: none; }
   .control_item { width: 34px; height: 34px; }
   .view_up, .view_down, .view_left, .view_right, .view_center { width: 30px; height: 30px; font-size: 1rem; }
 }
+
+/* ====== 空地协同态势条 ====== */
+.situ-strip {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  gap: 10px;
+  z-index: 6;
+  pointer-events: none;
+}
+.situ-strip__item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: rgba(7, 24, 48, 0.78);
+  border: 1px solid rgba(64, 158, 255, 0.35);
+  border-radius: 4px;
+  color: #cfe6ff;
+  font-size: 12px;
+  backdrop-filter: blur(4px);
+}
+.situ-strip__item.alert {
+  border-color: #ff6b6b;
+  box-shadow: 0 0 10px rgba(255, 107, 107, 0.5);
+  animation: situ-pulse 1.4s ease-in-out infinite;
+}
+.situ-strip__item b { color: #fff; font-size: 16px; font-weight: 700; }
+.situ-strip__item em { font-style: normal; opacity: 0.75; }
+.situ-strip__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #52c41a;
+}
+.situ-strip__dot[data-risk="MEDIUM"] { background: #faad14; }
+.situ-strip__dot[data-risk="HIGH"] { background: #fa541c; }
+.situ-strip__dot[data-risk="CRITICAL"] { background: #ff1f1f; box-shadow: 0 0 6px #ff1f1f; }
+.situ-strip__dot--robot { background: #40a9ff; }
+.situ-strip__dot--order { background: #73d13d; }
+@keyframes situ-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+/* ====== 智能体悬浮入口 ====== */
+.agent-fab {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 999;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px 10px 12px;
+  background: linear-gradient(135deg, #1677ff, #0958d9);
+  border: 1px solid rgba(100, 180, 255, 0.6);
+  border-radius: 30px;
+  cursor: pointer;
+  box-shadow: 0 6px 20px rgba(22, 119, 255, 0.45);
+  transition: all 0.25s;
+}
+.agent-fab:hover { transform: translateY(-2px); box-shadow: 0 10px 26px rgba(22, 119, 255, 0.6); }
+.agent-fab.open { padding: 10px 14px; }
+.agent-fab__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  background: rgba(255, 255, 255, 0.22);
+  border-radius: 50%;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+}
+.agent-fab__label { color: #fff; font-size: 13px; font-weight: 600; }
+
+.agent-panel {
+  position: fixed;
+  right: 24px;
+  bottom: 86px;
+  z-index: 999;
+  width: 360px;
+  height: 480px;
+  background: rgba(8, 20, 42, 0.96);
+  border: 1px solid rgba(64, 158, 255, 0.4);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(8px);
+}
+.agent-panel__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 14px;
+  border-bottom: 1px solid rgba(64, 158, 255, 0.25);
+}
+.agent-panel__head b { color: #fff; font-size: 14px; }
+.agent-panel__head small { display: block; color: #7fb3ff; font-size: 11px; margin-top: 2px; }
+.agent-panel__status {
+  padding: 3px 10px;
+  border-radius: 10px;
+  font-size: 11px;
+  background: rgba(255, 77, 79, 0.2);
+  color: #ff7875;
+}
+.agent-panel__status.on { background: rgba(82, 196, 26, 0.2); color: #95de64; }
+.agent-panel__status-group { display: flex; gap: 6px; }
+.agent-panel__keytip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  background: rgba(250, 173, 20, 0.1);
+  border-bottom: 1px solid rgba(250, 173, 20, 0.2);
+}
+.agent-panel__keytip span { color: #ffd666; font-size: 11px; white-space: nowrap; }
+.agent-panel__keytip input {
+  flex: 1;
+  padding: 4px 8px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(250, 173, 20, 0.3);
+  border-radius: 4px;
+  color: #fff;
+  font-size: 11px;
+  outline: none;
+}
+.agent-panel__keytip button {
+  padding: 4px 10px;
+  background: #faad14;
+  border: none;
+  border-radius: 4px;
+  color: #000;
+  font-size: 11px;
+  cursor: pointer;
+  font-weight: 600;
+}
+.agent-panel__body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.agent-panel__empty {
+  color: #6b8fb8;
+  font-size: 12px;
+  line-height: 1.6;
+  padding: 20px 10px;
+  text-align: center;
+}
+.agent-msg { display: flex; }
+.agent-msg.user { justify-content: flex-end; }
+.agent-msg__bubble {
+  max-width: 82%;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.agent-msg.user .agent-msg__bubble { background: #1677ff; color: #fff; }
+.agent-msg.assistant .agent-msg__bubble { background: rgba(64, 158, 255, 0.14); color: #d6e8ff; border: 1px solid rgba(64, 158, 255, 0.25); }
+.agent-panel__foot {
+  display: flex;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid rgba(64, 158, 255, 0.25);
+}
+.agent-panel__foot input {
+  flex: 1;
+  padding: 8px 12px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(64, 158, 255, 0.3);
+  border-radius: 6px;
+  color: #fff;
+  font-size: 13px;
+  outline: none;
+}
+.agent-panel__foot input:focus { border-color: #40a9ff; }
+.agent-panel__foot button {
+  padding: 0 16px;
+  background: #1677ff;
+  border: none;
+  border-radius: 6px;
+  color: #fff;
+  font-size: 13px;
+  cursor: pointer;
+}
+.agent-panel__foot button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.agent-panel-enter-active, .agent-panel-leave-active { transition: all 0.25s ease; }
+.agent-panel-enter-from, .agent-panel-leave-to { opacity: 0; transform: translateY(20px); }
+
+/* ====== 空地协同 Tab（竞赛级） ====== */
+.coord-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: 100%;
+  overflow-y: auto;
+  padding: 10px 8px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(64,158,255,0.4) transparent;
+}
+.coord-panel::-webkit-scrollbar { width: 4px; }
+.coord-panel::-webkit-scrollbar-thumb { background: rgba(64,158,255,0.4); border-radius: 2px; }
+
+.coord-block {
+  position: relative;
+  background: linear-gradient(135deg, rgba(7,24,48,0.85), rgba(10,30,60,0.7));
+  border: 1px solid rgba(64, 158, 255, 0.25);
+  border-radius: 6px;
+  padding: 10px;
+  overflow: hidden;
+}
+.coord-block--glow::before { content: none; }
+@keyframes scan-line { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }
+.coord-block__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  position: relative;
+}
+.coord-block__head b {
+  color: #e6f3ff;
+  font-size: 13px;
+  letter-spacing: 1px;
+  text-shadow: 0 0 8px rgba(64,169,255,0.5);
+}
+.coord-block__count {
+  margin-left: auto;
+  font-size: 11px;
+  color: #7fb3ff;
+  background: rgba(64,158,255,0.1);
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-family: 'Courier New', monospace;
+}
+.coord-block__tag {
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+.coord-block__tag--drone { background: rgba(64, 169, 255, 0.25); color: #69c0ff; border: 1px solid rgba(64,169,255,0.4); }
+.coord-block__tag--robot { background: rgba(114, 46, 209, 0.25); color: #b37feb; border: 1px solid rgba(114,46,209,0.4); }
+.coord-block__tag--thermal { background: rgba(250, 84, 28, 0.25); color: #ff9c6e; border: 1px solid rgba(250,84,28,0.4); }
+.coord-btn {
+  padding: 3px 10px;
+  background: linear-gradient(135deg, rgba(22,119,255,0.4), rgba(9,88,217,0.4));
+  border: 1px solid rgba(64, 169, 255, 0.6);
+  border-radius: 4px;
+  color: #bae0ff;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-weight: 600;
+}
+.coord-btn:hover {
+  background: linear-gradient(135deg, rgba(22,119,255,0.7), rgba(9,88,217,0.7));
+  box-shadow: 0 0 10px rgba(64,169,255,0.5);
+  transform: translateY(-1px);
+}
+.coord-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.coord-log {
+  margin-bottom: 8px;
+  padding: 6px 8px;
+  background: rgba(0,0,0,0.3);
+  border-radius: 4px;
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+}
+.coord-log__line { display: flex; gap: 8px; padding: 2px 0; }
+.coord-log__time { color: #5a7a9e; }
+.coord-log__line.ok span:last-child { color: #95de64; }
+.coord-log__line.err span:last-child { color: #ff7875; }
+.coord-log__line.info span:last-child { color: #cfe6ff; }
+
+.coord-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(64, 158, 255, 0.1);
+  border-radius: 4px;
+  font-size: 12px;
+  transition: all 0.2s;
+}
+.coord-row:hover {
+  border-color: rgba(64, 158, 255, 0.4);
+  background: rgba(64, 158, 255, 0.08);
+}
+.coord-row.is-live { border-color: rgba(82,196,26,0.5); }
+.coord-row.is-alert { border-color: rgba(255,77,79,0.5); }
+@keyframes live-pulse { 0%,100% { box-shadow: 0 0 8px rgba(82,196,26,0.2); } 50% { box-shadow: 0 0 16px rgba(82,196,26,0.4); } }
+@keyframes alert-pulse { 0%,100% { box-shadow: 0 0 8px rgba(255,77,79,0.2); } 50% { box-shadow: 0 0 16px rgba(255,77,79,0.5); } }
+.coord-row__main { flex: 1; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.coord-row__goal { color: #cfe6ff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 11px; }
+.coord-code {
+  color: #69c0ff;
+  font-size: 10px;
+  font-style: normal;
+  font-family: 'Courier New', monospace;
+  letter-spacing: 0.5px;
+}
+.coord-row__battery { display: flex; align-items: center; gap: 6px; min-width: 80px; }
+.battery-bar {
+  width: 50px;
+  height: 6px;
+  background: rgba(0,0,0,0.4);
+  border-radius: 3px;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,0.1);
+}
+.battery-bar__fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.5s ease;
+}
+.coord-row__battery small { color: #95de64; font-size: 10px; font-family: monospace; min-width: 30px; }
+.coord-row__temp { display: flex; align-items: center; gap: 6px; min-width: 90px; }
+.temp-bar {
+  width: 50px;
+  height: 6px;
+  background: rgba(0,0,0,0.4);
+  border-radius: 3px;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,0.1);
+}
+.temp-bar__fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: all 0.5s ease;
+}
+.coord-row__temp b { font-size: 13px; font-family: 'Courier New', monospace; font-weight: 700; min-width: 42px; text-align: right; }
+.coord-row__meta { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; }
+.coord-row__meta small { color: #7fb3ff; font-size: 10px; }
+.coord-row__ops { display: flex; gap: 4px; }
+.coord-ops-btn {
+  padding: 3px 8px;
+  background: rgba(64, 169, 255, 0.15);
+  border: 1px solid rgba(64, 169, 255, 0.3);
+  border-radius: 3px;
+  color: #bae0ff;
+  font-size: 10px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.coord-ops-btn:hover { background: rgba(64, 169, 255, 0.35); }
+.coord-ops-btn.primary {
+  background: linear-gradient(135deg, #52c41a, #389e0d);
+  border-color: #52c41a;
+  color: #fff;
+  font-weight: 600;
+}
+.coord-ops-btn.primary:hover { box-shadow: 0 0 10px rgba(82,196,26,0.5); }
+.coord-empty { color: #5a7a9e; text-align: center; padding: 14px; font-size: 12px; font-style: italic; }
+
+.state-chip, .risk-chip {
+  padding: 2px 8px;
+  border-radius: 8px;
+  font-size: 10px;
+  white-space: nowrap;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+.state-chip.state-planned { background: rgba(82, 196, 26, 0.2); color: #95de64; border: 1px solid rgba(82,196,26,0.3); }
+.state-chip.state-running, .state-chip.state-executing {
+  background: rgba(24, 144, 255, 0.25); color: #69c0ff; border: 1px solid rgba(24,144,255,0.4);
+}
+.state-chip.state-paused { background: rgba(250, 173, 20, 0.2); color: #ffd666; border: 1px solid rgba(250,173,20,0.3); }
+.state-chip.state-completed { background: rgba(0, 0, 0, 0.3); color: #8c8c8c; border: 1px solid rgba(255,255,255,0.1); }
+.state-chip.state-failed { background: rgba(255, 77, 79, 0.2); color: #ff7875; border: 1px solid rgba(255,77,79,0.3); }
+@keyframes chip-glow { 0%,100% { box-shadow: 0 0 4px rgba(24,144,255,0.3); } 50% { box-shadow: 0 0 10px rgba(24,144,255,0.6); } }
+.risk-chip.risk-low { background: rgba(82, 196, 26, 0.2); color: #95de64; border: 1px solid rgba(82,196,26,0.3); }
+.risk-chip.risk-medium { background: rgba(250, 173, 20, 0.2); color: #ffd666; border: 1px solid rgba(250,173,20,0.3); }
+.risk-chip.risk-high { background: rgba(250, 84, 28, 0.2); color: #ff9c6e; border: 1px solid rgba(250,84,28,0.4); }
+.risk-chip.risk-critical {
+  background: rgba(255, 31, 31, 0.25); color: #ff4d4f; border: 1px solid rgba(255,31,31,0.5);
+}
+@keyframes risk-blink { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+.coord-robots { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.coord-robot {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(114,46,209,0.2);
+  border-radius: 14px;
+  font-size: 11px;
+  transition: all 0.2s;
+}
+.coord-robot:hover { border-color: rgba(114,46,209,0.5); }
+.coord-robot em { color: #d6e8ff; font-style: normal; }
+.coord-robot small { color: #b37feb; font-size: 10px; }
+.coord-robot__battery { width: 30px; }
+.mini-bar { width: 100%; height: 4px; background: rgba(0,0,0,0.4); border-radius: 2px; overflow: hidden; }
+.mini-bar__fill { height: 100%; background: linear-gradient(90deg,#52c41a,#95de64); border-radius: 2px; transition: width 0.5s; }
+.coord-robot__dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  box-shadow: 0 0 4px currentColor;
+}
+.dot-idle { background: #52c41a; color: #52c41a; }
+.dot-busy { background: #1890ff; color: #1890ff; }
+.dot-fault { background: #ff4d4f; color: #ff4d4f; }
+.dot-offline { background: #595959; color: #595959; }
+@keyframes dot-blink { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+.robot-idle { border-color: rgba(82,196,26,0.3); }
+.robot-busy { border-color: rgba(24,144,255,0.4); }
+.robot-fault { border-color: rgba(255,77,79,0.5); }
+.robot-offline { opacity: 0.5; }
 </style>

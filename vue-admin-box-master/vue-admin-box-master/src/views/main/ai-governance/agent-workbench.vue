@@ -64,6 +64,52 @@
         </div>
       </header>
 
+      <!-- 实时态势条：热源 + 空地协同 -->
+      <div class="situ-strip">
+        <div class="situ-block">
+          <div class="situ-head">
+            <strong>红外热源</strong>
+            <span>{{ thermalFrames.length }} 帧</span>
+          </div>
+          <div class="situ-cards">
+            <button
+              v-for="frame in thermalFrames"
+              :key="frame.frame_id"
+              type="button"
+              class="situ-card"
+              :class="String(frame.risk_level || '').toLowerCase()"
+              :title="`${frame.location_name} · ${(frame.max_temp||0).toFixed(1)}℃`"
+            >
+              <div class="situ-thumb" :style="gridFromFrame(frame)"></div>
+              <div class="situ-info">
+                <b>{{ (frame.max_temp ?? 0).toFixed(1) }}℃</b>
+                <em>{{ riskLabel(frame.risk_level) }}</em>
+              </div>
+            </button>
+            <div v-if="!thermalFrames.length" class="situ-empty">暂无</div>
+          </div>
+        </div>
+        <div class="situ-divider"></div>
+        <div class="situ-block">
+          <div class="situ-head">
+            <strong>空地协同</strong>
+            <span>{{ robots.length }} 机 · {{ activeOrders.length }} 单</span>
+          </div>
+          <div class="situ-chips">
+            <div v-for="r in robots" :key="r.robot_code || r.robotCode" class="situ-chip" :class="String(r.state || '').toLowerCase()">
+              <span class="dot"></span>
+              <b>{{ r.name || r.robot_code }}</b>
+              <em>{{ r.battery ?? 0 }}%</em>
+            </div>
+            <div v-for="o in activeOrders" :key="o.order_id" class="situ-chip order">
+              <b>#{{ o.order_id }}</b>
+              <em>{{ o.robot_code || o.robotCode }}</em>
+            </div>
+            <div v-if="!robots.length && !activeOrders.length" class="situ-empty">暂无</div>
+          </div>
+        </div>
+      </div>
+
       <!-- 空态 -->
       <div v-if="messages.length === 0" class="chat-welcome">
         <div class="welcome-orb"></div>
@@ -229,6 +275,8 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { deleteAgentSession, getAgentContext, getAgentHistory, getAgentStatus, listAgentSessions, runAgentStream } from '@/api/agent'
+import { listRobots as listDispatchRobots, listOrders as listDispatchOrders } from '@/api/dispatch'
+import { listFrames as listThermalFrames } from '@/api/thermal'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 
@@ -584,11 +632,40 @@ async function loadInitial() {
   }
 }
 
+// ============ 实时态势：热源 + 空地协同 ============
+const thermalFrames = ref<any[]>([])
+const robots = ref<any[]>([])
+const activeOrders = ref<any[]>([])
+const situPoll: number | null = null
+function riskLabel(risk: string) {
+  return ({ LOW: '低', MEDIUM: '中', HIGH: '高', CRITICAL: '紧急' } as any)[risk] || '—'
+}
+function gridFromFrame(frame: any) {
+  const peak = Number(frame?.max_temp ?? 0)
+  const alpha = Math.min(1, peak / 300)
+  const hue = peak > 150 ? 0 : peak > 80 ? 25 : peak > 50 ? 50 : 180
+  return `background: linear-gradient(135deg, hsla(${hue},80%,55%,${alpha}), hsla(${Math.max(0,hue-20)},70%,45%,${alpha * 0.85}));`
+}
+async function loadSitu() {
+  try {
+    const [frames, robotList, orders] = await Promise.all([
+      listThermalFrames(5).catch(() => []),
+      listDispatchRobots().catch(() => []),
+      listDispatchOrders('EXECUTING', 10).catch(() => []),
+    ])
+    thermalFrames.value = frames
+    robots.value = robotList
+    activeOrders.value = orders
+  } catch {}
+}
+
 onMounted(async () => {
   await loadSessions()
   loadInitial()
-  // 自动刷新一次 runtime + 数据源（30s）
+  loadSitu()
+  // 自动刷新一次 runtime + 数据源（30s）+ 实时态势（15s）
   window.setInterval(loadInitial, 30000)
+  window.setInterval(loadSitu, 15000)
 })
 onBeforeUnmount(() => { running.value = false })
 </script>
@@ -1153,6 +1230,60 @@ onBeforeUnmount(() => { running.value = false })
 .runtime-dl dt { color: #9ca3af; }
 .runtime-dl dd { margin: 0; color: #374151; text-align: right; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .runtime-dl dd.mono { font-family: 'JetBrains Mono', Consolas, monospace; font-size: 10px; }
+
+/* ====== 实时态势条：热源 + 空地协同 ====== */
+.situ-strip {
+  display: flex;
+  gap: 12px;
+  align-items: stretch;
+  padding: 10px 16px;
+  margin: 0 16px 8px;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+}
+.situ-block { flex: 1; min-width: 0; }
+.situ-block + .situ-divider { width: 1px; background: #e5e7eb; margin: 4px 0; }
+.situ-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.situ-head strong { font-size: 13px; color: #1f2937; font-weight: 600; }
+.situ-head span { font-size: 11px; color: #9ca3af; }
+.situ-cards { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; }
+.situ-card {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #f9fafb;
+  cursor: pointer;
+  transition: all .15s ease;
+}
+.situ-card:hover { transform: translateY(-1px); box-shadow: 0 3px 8px rgba(0,0,0,0.08); }
+.situ-card.high, .situ-card.critical { border-color: #fecaca; background: #fef2f2; }
+.situ-card.medium { border-color: #fed7aa; background: #fff7ed; }
+.situ-thumb { width: 32px; height: 32px; border-radius: 8px; flex-shrink: 0; }
+.situ-info b { display: block; font-size: 13px; color: #1f2937; line-height: 1.2; }
+.situ-info em { display: block; font-size: 10px; color: #6b7280; font-style: normal; }
+.situ-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.situ-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 10px; border-radius: 999px; font-size: 11px;
+  background: #f3f4f6; color: #374151;
+}
+.situ-chip .dot { width: 7px; height: 7px; border-radius: 50%; background: #22c55e; }
+.situ-chip.busy .dot { background: #f59e0b; }
+.situ-chip.fault .dot, .situ-chip.offline .dot { background: #ef4444; }
+.situ-chip b { font-weight: 600; }
+.situ-chip em { font-style: normal; color: #6b7280; }
+.situ-chip.order { background: #eff6ff; color: #1d4ed8; }
+.situ-empty { font-size: 11px; color: #9ca3af; padding: 4px 0; }
+@media (max-width: 720px) {
+  .situ-strip { flex-direction: column; }
+  .situ-divider { display: none; }
+}
 </style>
 
 <!--

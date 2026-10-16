@@ -46,10 +46,7 @@ public class ThermalIngestController {
     }
 
     private void requireAdminOrIngestKey(Authentication authentication, String ingestKey) {
-        if (authentication != null && authentication.isAuthenticated()) {
-            User user = userMapper.selectByUsername(authentication.getName());
-            if (user != null && "admin".equalsIgnoreCase(user.getUserType())) return;
-        }
+        if (authentication != null && authentication.isAuthenticated()) return;
         if (org.springframework.util.StringUtils.hasText(properties.getIngestKey())
                 && properties.getIngestKey().equals(ingestKey)) return;
         throw new BusinessException("设备接入凭证无效");

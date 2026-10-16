@@ -2,6 +2,7 @@ package com.example.evmonitorplatform.controller;
 
 import com.example.evmonitorplatform.agent.AgentWorkbenchService;
 import com.example.evmonitorplatform.common.response.ApiResponse;
+import com.example.evmonitorplatform.config.AiGovernanceProperties;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
@@ -17,6 +18,16 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class AgentWorkbenchController {
     private final AgentWorkbenchService service;
+    private final AiGovernanceProperties aiProps;
+
+    @PostMapping("/config")
+    public ApiResponse<Map<String, Object>> setConfig(@RequestBody Map<String, Object> body) {
+        String apiKey = body == null ? null : asString(body.get("apiKey"));
+        if (apiKey != null) {
+            aiProps.setApiKey(apiKey.trim());
+        }
+        return ApiResponse.success(Map.of("llmConfigured", aiProps.getApiKey() != null && !aiProps.getApiKey().isBlank()));
+    }
 
     @GetMapping("/status")
     public ApiResponse<Map<String, Object>> status() { return ApiResponse.success(service.status()); }
