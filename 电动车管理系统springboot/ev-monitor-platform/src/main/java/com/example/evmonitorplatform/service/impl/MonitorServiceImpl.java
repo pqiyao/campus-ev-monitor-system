@@ -300,7 +300,7 @@ public class MonitorServiceImpl implements MonitorService {
             List<Map<String, Object>> rows = jdbcTemplate.queryForList(
                     "SELECT mission_id, mission_code, area_name, state, plan_version, battery_current, " +
                             "center_lng, center_lat, update_time " +
-                    "FROM patrol_mission WHERE state IN ('RUNNING','PAUSED','RETURNING','MANUAL_CONTROL') " +
+                    "FROM patrol_mission WHERE state IN ('PLANNED','RUNNING','PAUSED','RETURNING','MANUAL_CONTROL') " +
                             "AND update_time >= DATE_SUB(NOW(), INTERVAL 30 MINUTE) " +
                             "ORDER BY CASE WHEN state IN ('RUNNING','RETURNING','MANUAL_CONTROL') THEN 0 ELSE 1 END, update_time DESC LIMIT 6");
             for (Map<String, Object> mission : rows) {
